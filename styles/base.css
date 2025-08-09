@@ -1,0 +1,346 @@
+/* ─────────────────────────────────────────────────────────────
+   Trwth brand + dark theme tokens
+────────────────────────────────────────────────────────────── */
+:root {
+  /* Brand */
+  --trwth-primary:       #0a2540;
+  --trwth-primary-light: #3B4C66;
+  --trwth-gradient1:     #2e8bc0; /* accent start */
+  --trwth-gradient2:     #58c6b1; /* accent end   */
+  --trwth-text:          #19324D;
+
+  /* Dark UI */
+  --bg:            #0f1216;
+  --panel:         #1a1f26;
+  --panel-2:       #313e4b;
+  --border:        #2a313a;
+  --border-soft:   #222a33;
+  --fg:            #e8ecf1;
+  --fg-muted:      #aeb7c2;
+
+  /* Accents mapped to brand */
+  --accent:        var(--trwth-gradient1);
+  --accent-2:      var(--trwth-gradient2);
+  --shadow:        0 8px 22px rgba(0,0,0,.35);
+  --radius:        12px;
+  --gap:           8px;
+
+  /* Derived tints (modern browsers) */
+  --wash:          color-mix(in oklab, var(--accent) 14%, transparent);
+  --wash-border:   color-mix(in oklab, var(--accent) 28%, var(--border));
+}
+
+html, body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji","Segoe UI Emoji";
+  line-height: 1.4;
+  margin: 0;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Trwth logo (scales with --logo-size)
+────────────────────────────────────────────────────────────── */
+.logo {
+  --logo-size: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--logo-size) * 0.08);
+  font-size: var(--logo-size);
+  font-weight: 700;
+  color: var(--trwth-text);
+  line-height: 1;
+}
+
+.logo .logo-text {
+  background: linear-gradient(90deg, var(--trwth-gradient1), var(--trwth-gradient2));
+  -webkit-background-clip: text;  /* Safari/Chromium */
+  background-clip: text;
+  -webkit-text-fill-color: transparent; /* Safari */
+  color: transparent; /* others */
+}
+
+/* Accessibility fallback for high-contrast/forced colors */
+@media (forced-colors: active) {
+  .logo .logo-text {
+    -webkit-text-fill-color: ButtonText;
+    color: ButtonText;
+    background: none;
+  }
+}
+
+.logo-shield {
+  position: relative;
+  width:  calc(var(--logo-size) * 1.25);
+  height: calc(var(--logo-size) * 1.25);
+}
+.logo-shield .middle {
+  position: absolute; inset: 0 auto 0 25%;
+  width: 50%;
+  background: var(--trwth-gradient1);
+  clip-path: polygon(0 20%, 50% 0, 100% 20%, 100% 80%, 50% 100%, 0 80%);
+  z-index: 1;
+}
+.logo-shield .left {
+  position: absolute; inset: 0 auto 0 0;
+  width: 50%; background: var(--trwth-primary);
+  clip-path: polygon(0 0, 50% 20%, 100% 100%, 50% 80%);
+  z-index: 2;
+}
+.logo-shield .right {
+  position: absolute; inset: 0 0 0 auto;
+  width: 50%; background: var(--trwth-gradient2);
+  clip-path: polygon(100% 0, 50% 20%, 0 100%, 50% 80%);
+  z-index: 2;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Grid
+────────────────────────────────────────────────────────────── */
+.board-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--cols, 12), 1fr);
+  grid-auto-rows: var(--row-height, 110px);
+  gap: var(--gap);
+  padding: 12px;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Card
+────────────────────────────────────────────────────────────── */
+.board-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.board-card__header {
+  user-select: none;
+  cursor: grab;
+  padding: 10px 12px;
+  font-weight: 600;
+  font-size: 0.95rem;
+  letter-spacing: .2px;
+  color: var(--fg);
+  background: linear-gradient(180deg, var(--panel-2), transparent);
+  border-bottom: 1px solid var(--border-soft);
+}
+.board-card__header:active { cursor: grabbing; }
+
+.board-card__body {
+  position: relative;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 12px;
+}
+
+/* Header actions */
+.board-card__actions { margin-left: auto; display: inline-flex; gap: 6px; }
+.board-card__iconbtn {
+  appearance: none; cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--fg);
+  border-radius: 8px; padding: 4px 8px; font-size: .85rem; line-height: 1;
+  transition: border-color .15s ease, transform .08s ease;
+}
+.board-card__iconbtn:hover { border-color: var(--wash-border); }
+.board-card__iconbtn:active { transform: translateY(1px); }
+
+/* Resize handle */
+.board-card__resizer {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 14px;
+  height: 14px;
+  pointer-events: auto;
+  cursor: nwse-resize;
+  opacity: .75;
+  border-right: 2px solid rgba(255,255,255,.5);
+  border-bottom: 2px solid rgba(255,255,255,.5);
+}
+
+/* Active drag/resize state */
+.board-card.is-active {
+  outline: 2px dashed rgba(255,255,255,.18);
+  outline-offset: -4px;
+  box-shadow: 0 14px 34px rgba(0,0,0,.50);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Table: clean, elegant, sticky header, zebra, hover
+────────────────────────────────────────────────────────────── */
+.board-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  background: transparent;
+  font-size: 0.93rem;
+}
+.board-table thead th {
+  position: sticky; top: 0; z-index: 1;
+  text-align: left; font-weight: 600; color: var(--fg);
+  background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,0));
+  border-bottom: 1px solid var(--border);
+  padding: 8px 10px;
+  backdrop-filter: blur(2px);
+}
+.board-table td {
+  color: var(--fg);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+.board-table tbody tr:nth-child(even) td {
+  background: rgba(255,255,255,.02);
+}
+.board-table tbody tr:hover td {
+  background: var(--wash);
+  border-bottom-color: var(--wash-border);
+}
+/* numeric alignment */
+.board-table td.num, .board-table th.num { text-align: right; }
+
+.th-map-btn {
+  appearance: none; cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--fg);
+  border-radius: 8px;
+  padding: 2px 6px;
+  font-size: .78rem;
+  line-height: 1.1;
+}
+.th-map-btn:hover { border-color: var(--wash-border); }
+
+/* ─────────────────────────────────────────────────────────────
+   Scrollbar (subtle)
+────────────────────────────────────────────────────────────── */
+.board-card__body::-webkit-scrollbar { height: 10px; width: 10px; }
+.board-card__body::-webkit-scrollbar-thumb { background: #2d3641; border-radius: 8px; }
+.board-card__body::-webkit-scrollbar-track { background: transparent; }
+.board-card__body { scrollbar-width: thin; scrollbar-color: #2d3641 transparent; }
+
+/* ─────────────────────────────────────────────────────────────
+   File input (CSV) – dark + brand
+────────────────────────────────────────────────────────────── */
+.custom-file-upload {
+  --file-bg: var(--panel-2);
+  --file-fg: var(--fg);
+  --file-border: var(--border);
+  --file-hover: var(--wash);
+
+  display: inline-flex; align-items: center; gap: 10px;
+  width: 100%; padding: 10px 12px; cursor: pointer;
+
+  color: var(--file-fg); background: var(--file-bg);
+  border: 1px solid var(--file-border); border-radius: 10px;
+  box-shadow: var(--shadow);
+  transition: background-color .15s ease, border-color .15s ease, box-shadow .15s ease, transform .08s ease;
+}
+.custom-file-upload:hover { background: linear-gradient(180deg, var(--file-hover), transparent); border-color: var(--wash-border); }
+.custom-file-upload:active { transform: translateY(1px); }
+.custom-file-upload:focus-within {
+  outline: 2px solid color-mix(in oklab, var(--accent) 55%, transparent);
+  outline-offset: 2px;
+}
+.custom-file-upload .label-text { font-weight: 600; letter-spacing: .2px; }
+.custom-file-upload .subtle, .custom-file-upload .filename {
+  font-size: .85rem; color: var(--fg-muted);
+}
+.custom-file-upload .filename {
+  margin-left: auto; max-width: 50%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right;
+}
+.custom-file-upload.completed { border-color: var(--wash-border); box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 20%, transparent); }
+.custom-file-upload.completed::after { content: "✓"; font-weight: 700; margin-left: 8px; color: var(--accent); }
+.hidden-file-input { display: none; }
+
+/* ─────────────────────────────────────────────────────────────
+   Loader pane (with Trwth logo + brand top line)
+────────────────────────────────────────────────────────────── */
+.brand-topline { position: relative; }
+.brand-topline::before {
+  content:""; position:absolute; inset:0 auto auto 0; height:3px; width:100%;
+  background: linear-gradient(90deg, var(--trwth-gradient1), var(--trwth-gradient2));
+  filter: brightness(1.15);
+}
+
+.loader-pane {
+  position: fixed; top: 10px; right: 10px; z-index: 9999;
+  background: var(--panel-2); color: var(--fg);
+  padding: 12px 36px 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 22px rgba(0,0,0,.35);
+  max-width: 420px;
+}
+.loader-pane__brand {
+  display:flex; align-items:center; gap:10px; margin-bottom: 10px;
+}
+.loader-pane__brand .logo { --logo-size: 26px; color: var(--fg); }
+.loader-pane__brand .appname {
+  font-weight: 800; letter-spacing:.3px;
+  background: linear-gradient(90deg, var(--trwth-gradient1), var(--trwth-gradient2));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.loader-pane__subtitle { color: var(--fg-muted); font-size: .85rem; }
+
+/* Buttons reused in loader/modal/cards */
+.loader-pane__btn,
+.trwth-modal__btn,
+.board-card__iconbtn {
+  transition: border-color .15s ease, transform .08s ease;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Drilldown modal
+────────────────────────────────────────────────────────────── */
+.trwth-modal {
+  position: fixed; inset: 0; z-index: 10000;
+  display: none; align-items: center; justify-content: center;
+}
+.trwth-modal.is-open { display: flex; }
+.trwth-modal__backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.55); }
+.trwth-modal__dialog {
+  position: relative; max-width: min(1100px, 94vw); width: 94vw; max-height: 86vh;
+  background: var(--panel); color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.trwth-modal__header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; font-weight: 700;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+}
+.trwth-modal__title { font-weight: 700; }
+.trwth-modal__spacer { flex: 1; }
+.trwth-modal__body { flex: 1; overflow: auto; padding: 10px 12px; }
+.trwth-modal__btn {
+  appearance: none; cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--fg);
+  border-radius: 8px; padding: 6px 10px; font-size: .9rem;
+}
+.trwth-modal__btn:hover { border-color: var(--wash-border); }
+
+/* ─────────────────────────────────────────────────────────────
+   Reduced motion
+────────────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .board-card, .board-card__header,
+  .custom-file-upload, .board-card__iconbtn,
+  .loader-pane__btn, .trwth-modal__btn { transition: none !important; }
+}
