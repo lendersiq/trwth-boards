@@ -148,6 +148,7 @@ html, body {
   color: var(--fg);
   border-radius: 8px; padding: 4px 8px; font-size: .85rem; line-height: 1;
   transition: border-color .15s ease, transform .08s ease;
+  margin-left: 1em;
 }
 .board-card__iconbtn:hover { border-color: var(--wash-border); }
 .board-card__iconbtn:active { transform: translateY(1px); }
