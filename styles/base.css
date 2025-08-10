@@ -124,7 +124,7 @@ html, body {
   cursor: grab;
   padding: 10px 12px;
   font-weight: 600;
-  font-size: 0.95rem;
+  font-size: 1.25rem;
   letter-spacing: .2px;
   color: var(--fg);
   background: linear-gradient(180deg, var(--panel-2), transparent);
