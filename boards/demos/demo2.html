@@ -4,12 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="../../styles/base.css">
-  <title>Demo Board 1</title>
+  <title>Demo Board 2</title>
 </head>
 <body>
   <script>
     window.boardConfig = {
-      board_layout: { cols: 12, row_height: 110, gap: 8, storage_key: "demo1-layout" },
+      board_layout: { cols: 12, row_height: 110, gap: 8, storage_key: "demo2-layout" },
       board: [
         {
           id: "commercialDemandDeposits",
@@ -44,7 +44,26 @@
               fn: "ytdPerformance", params: ["Average_Balance", "Commercial_Savings_Goal"] }
           ],
           filters: [{ id: "Branch_Number", source: "savings", filter: "[2,4,10]" }]
-        }
+        },
+         {
+          id: "commercialLoans",
+          title: "Commercial Loans closed this year",
+          type: "table",
+          primary_key: { id: "Owner_Code", source: "loan" },
+          secondary_keys: ["Portfolio"],
+          columns: [
+            { heading: "Officer", id: "Owner_Code", column_type: "data", data_type: "integer", source: "loan" },
+            { heading: "Principal", id: "Principal", column_type: "data", data_type: "currency", source: "loan" },
+            { heading: "Goal", id: "Goal", column_type: "data", data_type: "currency", source: "officer_data" },
+            { heading: "YTD Performance", id: "YTD_Performance", column_type: "function", data_type: "percent",
+              fn: "ytdPerformance", params: ["Principal", "Goal"] }
+          ],
+          filters: [
+            { id: "Owner_Code", source: "loan", filter: "[92]" },
+            { id: "Date_Opened", source: "loan", filter: "> 2024-01-01" },
+            { id: "Branch", source: "loan", filter: "[14]" }
+          ]
+        },
       ]
     };
   </script>
