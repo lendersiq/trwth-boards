@@ -341,12 +341,6 @@
     const sec = parent.appendChild(document.createElement("section"));
     sec.className = "board-section";
 
-    if (cfg.title) {
-      const h2 = document.createElement("h2");
-      h2.textContent = cfg.title;
-      sec.appendChild(h2);
-    }
-
     const tbl = document.createElement("table");
     tbl.className = "board-table";
     sec.appendChild(tbl);
@@ -1186,7 +1180,139 @@
       // Otherwise render immediately
       Trwth.core.renderBoard();
     };
+
+    // ── Export current dashboard → standalone HTML (no drilldown/UI) ─────────────
+    Trwth.core.exportDashboard = async function exportDashboard(opts = {}) {
+      const grid = document.querySelector(".board-grid");
+      if (!grid) {
+        console.warn("[export] no .board-grid found");
+        alert("Nothing to export yet.");
+        return;
+      }
+
+      // Grab layout tokens
+      const cfgLayout = (window.boardConfig && window.boardConfig.board_layout) || {};
+      const cs   = getComputedStyle(grid);
+      const cols = parseInt(cs.getPropertyValue("--cols"))       || cfgLayout.cols       || 12;
+      const rowH = parseInt(cs.getPropertyValue("--row-height")) || cfgLayout.row_height || 110;
+      const gap  = parseInt(cs.getPropertyValue("--gap"))        || cfgLayout.gap        || 8;
+
+      // Clone and sanitize cards (remove actions, resizers, unwrap header-map buttons, drop <h2>)
+      const container = document.createElement("div");
+      container.className = "board-grid";
+      container.style.setProperty("--cols", cols);
+      container.style.setProperty("--row-height", rowH + "px");
+      container.style.setProperty("--gap", gap + "px");
+
+      Array.from(grid.querySelectorAll(".board-card")).forEach((card) => {
+        const x = +card.dataset.x || 1, y = +card.dataset.y || 1;
+        const w = +card.dataset.w || 6, h = +card.dataset.h || 3;
+
+        const clone = card.cloneNode(true);
+
+        // strip runtime-only bits
+        clone.querySelector(".board-card__actions")?.remove();
+        clone.querySelector(".board-card__resizer")?.remove();
+
+        // unwrap any header mapping buttons if they exist (modal-only in app, but safe)
+        clone.querySelectorAll("button.th-map-btn").forEach(btn => {
+          const th = btn.closest("th");
+          if (th) th.textContent = btn.textContent || th.textContent;
+          else btn.replaceWith(document.createTextNode(btn.textContent || ""));
+        });
+
+        // drop <h2> subtitles inside bodies (the card header already holds the title)
+        clone.querySelectorAll(".board-section > h2, section.board-section > h2, h2").forEach(h => h.remove());
+
+        // re-apply grid position as inline style
+        clone.style.gridColumn = `${x}/span ${w}`;
+        clone.style.gridRow    = `${y}/span ${h}`;
+        Object.assign(clone.dataset, { x, y, w, h });
+
+        container.appendChild(clone);
+      });
+
+      // inline minimal styles (match your dark theme)
+      const STYLE = `
+      :root{
+        --bg:#0f1216;--panel:#1a1f26;--panel-2:#161b21;--border:#2a313a;--border-soft:#222a33;
+        --fg:#e8ecf1;--fg-muted:#aeb7c2;--shadow:0 8px 22px rgba(0,0,0,.35);
+        --radius:12px;--gap:8px;
+      }
+      html,body{background:var(--bg);color:var(--fg);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans";margin:0}
+      .board-grid{display:grid;grid-template-columns:repeat(var(--cols,12),1fr);grid-auto-rows:var(--row-height,110px);gap:var(--gap);padding:12px}
+      .board-card{display:flex;flex-direction:column;min-width:0;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
+      .board-card__header{padding:10px 12px;font-weight:600;font-size:1.25rem;color:var(--fg);background:linear-gradient(180deg,var(--panel-2),transparent);border-bottom:1px solid var(--border-soft)}
+      .board-card__body{min-height:0;overflow:auto;padding:10px 12px}
+      .board-table{width:100%;border-collapse:separate;border-spacing:0}
+      .board-table thead th{position:sticky;top:0;z-index:1;text-align:left;font-weight:600;color:var(--fg);
+        background:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,0));border-bottom:1px solid var(--border);padding:8px 10px}
+      .board-table td{color:var(--fg);padding:8px 10px;border-bottom:1px solid var(--border-soft);white-space:nowrap;text-overflow:ellipsis;overflow:hidden}
+      .board-table tbody tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+      .board-table td.num, .board-table th.num{text-align:right}
+      `;
+
+      // favicon (same as live page)
+      const faviconHref = (Trwth.core.renderFavicon && Trwth.core.renderFavicon()) || "";
+
+      const title = document.title || "Trwth Dashboard";
+      const html = `<!DOCTYPE html>
+    <html lang="en">
+    <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <title>${title}</title>
+    <link rel="icon" type="image/svg+xml" href="${faviconHref}"/>
+    <style>${STYLE}</style>
+    </head>
+    <body>
+    ${container.outerHTML}
+    </body>
+    </html>`;
+
+      // Save As: File System Access API when available; fallback to download
+      const saveName = (title || "trwth-dashboard").replace(/[\\/:*?"<>|]+/g, "_") + ".html";
+      try {
+        if ("showSaveFilePicker" in window) {
+          const handle = await window.showSaveFilePicker({
+            suggestedName: saveName,
+            types: [{ description: "HTML", accept: { "text/html": [".html"] } }],
+          });
+          const writable = await handle.createWritable();
+          await writable.write(new Blob([html], { type: "text/html" }));
+          await writable.close();
+          return;
+        }
+      } catch (e) {
+        // user canceled or API blocked → fall through to download
+        console.warn("[export] save picker failed; using download fallback", e);
+      }
+
+      // Fallback: regular download (lets browser decide location)
+      const blob = new Blob([html], { type: "text/html" });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href = url; a.download = saveName;
+      document.body.appendChild(a); a.click();
+      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 800);
+    };
+
+
   })();
+
+  // ── Trwth favicon (SVG data-URI) ─────────────────────────────
+  Trwth.core.renderFavicon = function renderFavicon() {
+    const href =
+      'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHBhdGggZmlsbD0iIzJFOEJDMCIgZD0iTTE2IDEyLjhMMzIgMEw0OCAxMi44TDQ4IDUxLjJMMzIgNjRMMTYgNTEuMloiLz48cGF0aCBmaWxsPSIjMEEyNTQwIiBkPSJNMCAwTDE2IDEyLjhMMzIgNjRMMTYgNTEuMloiLz48cGF0aCBmaWxsPSIjNThDNkIxIiBkPSJNNjQgMEw0OCAxMi44TDMyIDY0TDQ4IDUxLjJaIi8+PC9zdmc+';
+    // remove old icons, add the new one
+    document.querySelectorAll('link[rel="icon"]').forEach(n => n.remove());
+    const link = document.createElement('link');
+    link.rel = 'icon';
+    link.type = 'image/svg+xml';
+    link.href = href;
+    document.head.appendChild(link);
+    return href; // handy to reuse as a background-image
+  };
 
   /* ───── 7. Auto-start ───── */
   const start = () => Trwth.core.bootstrap();
@@ -1195,14 +1321,35 @@
   } else {
     start();
   }
-  renderFavicon();
+
+  Trwth.core.renderFavicon();
 })();
 
-function renderFavicon() {
-  const link = document.createElement('link');
-  link.rel = 'icon';
-  link.type = 'image/svg+xml';
-  link.href =
-    'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHBhdGggZmlsbD0iIzJFOEJDMCIgZD0iTTE2IDEyLjhMMzIgMEw0OCAxMi44TDQ4IDUxLjJMMzIgNjRMMTYgNTEuMloiLz48cGF0aCBmaWxsPSIjMEEyNTQwIiBkPSJNMCAwTDE2IDEyLjhMMzIgNjRMMTYgNTEuMloiLz48cGF0aCBmaWxsPSIjNThDNkIxIiBkPSJNNjQgMEw0OCAxMi44TDMyIDY0TDQ4IDUxLjJaIi8+PC9zdmc+';
-  document.head.appendChild(link);
-}
+// Add a floating "Export HTML" button once per page
+(() => {
+  if (document.querySelector(".trwth-export-fab")) return;
+  const href = (Trwth.core.renderFavicon && Trwth.core.renderFavicon()) || "";
+
+  const btn = document.createElement("button");
+  btn.className = "trwth-export-fab";
+  btn.type = "button";
+  btn.title = "Export dashboard as HTML";
+  btn.setAttribute("aria-label", "Export dashboard as HTML");
+  btn.style.cssText = `
+    position:fixed; right:14px; bottom:14px; z-index:9999;
+    width:56px; height:56px; border-radius:50%;
+    border:1px solid #2a313a; background:#313e48; cursor:pointer;
+    box-shadow:0 8px 22px rgba(0,0,0,.35), inset 0 0 0 999px rgba(0,0,0,.0);
+    display:inline-flex; align-items:center; justify-content:center;
+    padding:0; outline: none;
+  `;
+  const img = document.createElement("div");
+  img.style.cssText = `
+    width:28px; height:28px; border-radius:50%;
+    background-image:url('${href}');
+    background-size:contain; background-position:center; background-repeat:no-repeat;
+  `;
+  btn.appendChild(img);
+  btn.addEventListener("click", () => Trwth.core.exportDashboard());
+  document.body.appendChild(btn);
+})();
