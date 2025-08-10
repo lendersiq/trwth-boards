@@ -31,94 +31,125 @@
 
   // Filter engine: lists (type-tolerant) + comparisons
   U.applyFilters = (rows, filters = []) => {
-    if (!filters.length) return rows;
+    if (!filters?.length) return rows;
 
-    const isNumericLike = (x) => {
-      if (typeof x === "number") return Number.isFinite(x);
-      if (typeof x !== "string") return false;
-      const s = x.trim().replace(/[$,%\s,]/g, "");
-      if (s === "") return false;
-      return !Number.isNaN(Number(s));
-    };
-    const toNum = (x) => Number(String(x).trim().replace(/[$,%\s,]/g, ""));
+    // ---- local helpers ----
+    const cleanNum = (x) => String(x).trim().replace(/[$,%\s,]/g, "");
+    const isNumericLike = (x) =>
+      typeof x === "number" ? Number.isFinite(x)
+      : typeof x === "string" ? (cleanNum(x) !== "" && !Number.isNaN(Number(cleanNum(x))))
+      : false;
+    const toNum = (x) => Number(cleanNum(x));
 
-    const buildPred = (f) => {
-      // ------- legacy: { op: "in", values: [...] } -------
-      if (f.op === "in" && Array.isArray(f.values)) {
-        const numSet = new Set();
-        const strSet = new Set();
-        for (const v of f.values) {
-          strSet.add(String(v));               // "2"
-          if (isNumericLike(v)) numSet.add(toNum(v)); // 2
+    // split on a top-level separator; ignore inside [...] or quotes
+    const splitTop = (s, sep) => {
+      const out = []; let buf = ""; let depth = 0; let q = null;
+      for (let i = 0; i < s.length; i++) {
+        const ch = s[i];
+        if (q) { if (ch === q && s[i-1] !== "\\") q = null; buf += ch; continue; }
+        if (ch === '"' || ch === "'") { q = ch; buf += ch; continue; }
+        if (ch === "[") { depth++; buf += ch; continue; }
+        if (ch === "]") { depth = Math.max(0, depth - 1); buf += ch; continue; }
+        if (!depth && s.slice(i, i + sep.length) === sep) {
+          out.push(buf.trim()); buf = ""; i += sep.length - 1; continue;
         }
+        buf += ch;
+      }
+      if (buf.trim()) out.push(buf.trim());
+      return out;
+    };
+
+    const buildTermPred = (id, term) => {
+      term = term.trim();
+
+      // [a,b,c] list — tolerant of numbers/strings
+      if (/^\[.*\]$/.test(term)) {
+        let arr;
+        try { arr = JSON.parse(term.replace(/'(.*?)'/g, '"$1"')); }
+        catch { return () => true; }
+        const strSet = new Set(arr.map(v => String(v)));
+        const numSet = new Set(arr
+          .map(v => toNum(v))
+          .filter(n => Number.isFinite(n)));
         return (r) => {
-          const raw = r?.[f.id];
+          const raw = r?.[id];
           if (raw == null) return false;
-          // try numeric match first if applicable, then string fallback
-          if (isNumericLike(raw) && numSet.size && numSet.has(toNum(raw))) return true;
-          return strSet.has(String(raw));
+          if (strSet.has(String(raw))) return true;
+          return isNumericLike(raw) && numSet.has(toNum(raw));
         };
       }
 
-      // ------- new: { filter: "[...]" } or comparisons -------
-      if (typeof f.filter !== "string") return () => true;
-      const expr = f.filter.trim();
-
-      // NEW list handler (type tolerant)
-      if (/^\[.*\]$/.test(expr)) {
-        try {
-          const arr = JSON.parse(expr.replace(/'(.*?)'/g, '"$1"'));
-
-          // Build both string and numeric lookup sets so "2" and 2 both match.
-          const strSet = new Set(arr.map(v => String(v)));
-          const numSet = new Set(
-            arr
-              .map(v => Number(String(v).replace(/[$,%\s,]/g, "")))
-              .filter(n => Number.isFinite(n))
-          );
-
-          return (r) => {
-            const raw = r?.[f.id];
-            if (raw == null) return false;
-
-            const s = String(raw);
-            if (strSet.has(s)) return true;
-
-            const n = Number(String(raw).replace(/[$,%\s,]/g, ""));
-            return Number.isFinite(n) && numSet.has(n);
-          };
-        } catch { return () => true; }
-      }
-
-      // Comparison: ==, !=, >, <, >=, <=
-      const m = expr.match(/^(==|!=|>=|<=|>|<)\s*(.+)$/);
+      // comparators: == != > < >= <= (spaces optional)
+      const m = term.match(/^(==|!=|>=|<=|>|<)\s*(.+)$/);
       if (m) {
         const op = m[1];
-        const rhsRaw = m[2];
-        const rhsNum = Number(rhsRaw);
-        const rhs = !Number.isNaN(rhsNum) ? rhsNum : rhsRaw.replace(/^"|"$/g, "");
+        const rhsRaw = m[2].replace(/^"(.*)"$|^'(.*)'$/, "$1$2");
+        const rhsNum = isNumericLike(rhsRaw) ? toNum(rhsRaw) : NaN;
 
         return (r) => {
-          const vRaw = r?.[f.id];
-          const v = isNumericLike(vRaw) && !Number.isNaN(rhsNum) ? toNum(vRaw) : vRaw;
+          const lvRaw = r?.[id];
+          if (lvRaw == null) return false;
+
+          // numeric compare if both numeric-like
+          if (isNumericLike(lvRaw) && Number.isFinite(rhsNum)) {
+            const lv = toNum(lvRaw);
+            switch (op) {
+              case "==": return lv === rhsNum;
+              case "!=": return lv !== rhsNum;
+              case ">":  return lv >  rhsNum;
+              case "<":  return lv <  rhsNum;
+              case ">=": return lv >= rhsNum;
+              case "<=": return lv <= rhsNum;
+            }
+          }
+          // fallback: string compare
+          const L = String(lvRaw), R = String(rhsRaw);
           switch (op) {
-            case "==": return v == rhs;
-            case "!=": return v != rhs;
-            case ">":  return v  > rhs;
-            case "<":  return v  < rhs;
-            case ">=": return v >= rhs;
-            case "<=": return v <= rhs;
+            case "==": return L === R;
+            case "!=": return L !== R;
+            case ">":  return L >  R;
+            case "<":  return L <  R;
+            case ">=": return L >= R;
+            case "<=": return L <= R;
             default:   return true;
           }
         };
       }
 
-      // unsupported → pass
+      // unsupported term → allow
       return () => true;
     };
 
-    const preds = filters.map(buildPred);
-    return rows.filter(r => preds.every(fn => fn(r)));
+    // build predicate for one filter object (handles A && B || C over SAME id)
+    const buildFilterPred = (f) => {
+      // legacy {op:"in", values:[...]}
+      if (f.op === "in" && Array.isArray(f.values)) {
+        const strSet = new Set(f.values.map(String));
+        const numSet = new Set(f.values.map(toNum).filter(Number.isFinite));
+        return (r) => {
+          const raw = r?.[f.id];
+          if (raw == null) return false;
+          if (strSet.has(String(raw))) return true;
+          return isNumericLike(raw) && numSet.has(toNum(raw));
+        };
+      }
+
+      const expr = typeof f.filter === "string" ? f.filter.trim() : "";
+      if (!expr) return () => true;
+
+      // OR groups
+      const orParts = splitTop(expr, "||");
+      const orPreds = orParts.map(part => {
+        // AND within group
+        const andParts = splitTop(part, "&&");
+        const andPreds = andParts.map(t => buildTermPred(f.id, t));
+        return (r) => andPreds.every(p => p(r));
+      });
+      return (r) => orPreds.some(p => p(r));
+    };
+
+    const preds = filters.map(buildFilterPred);
+    return rows.filter(r => preds.every(p => p(r)));
   };
 
   /* merge helpers & formula evaluation */
@@ -700,7 +731,6 @@
 
     // Main: render grid & cards
     G.renderDashboard = (rootEl, boardConfig, sources, buildRowsForTable) => {
-      console.log('rootEl, boardConfig, sources, buildRowsForTable', rootEl, boardConfig, sources, buildRowsForTable)
       const U = Trwth.utils;
       const layout = boardConfig.board_layout || {};
       const cols = layout.cols || 12;
