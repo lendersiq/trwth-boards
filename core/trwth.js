@@ -882,7 +882,7 @@
               {
                 primaryKeyId: block.primary_key?.id,
                 secondaryKeys: block.secondary_keys || [],
-                enableHeaderMapping: true // ← card headings should NOT be buttons
+                enableHeaderMapping: true 
               }
             );
 
@@ -964,7 +964,13 @@
 
             pushUnique(pkId);
             (block.secondary_keys || []).forEach(pushUnique);
-            (block.columns || []).filter(c => c.source === prim).forEach(c => pushUnique(c.id));
+            //(block.columns || []).filter(c => c.source === prim).forEach(c => pushUnique(c.id));
+            (block.columns || [])
+              .filter(c =>
+                c.source === prim &&
+                c.column_type !== "formula"
+              )
+              .forEach(c => pushUnique(c.id))
 
             const drillDefs = order.map(id => colsById.get(id) || { id, heading: id, data_type: undefined });
 
@@ -1023,7 +1029,6 @@
               container.appendChild(table);
             }
 
-            // Assert something got rendered
             const rowsRendered = container.querySelectorAll("tbody tr").length;
             const colsRendered = container.querySelectorAll("thead th").length;
             console.log("[drill] rendered", { rowsRendered, colsRendered });
@@ -1213,8 +1218,9 @@
       }
     }
 
-    // Supports count columns like:
-    // { heading: "Type Count", id: "type_count", column_type: "count", source: "loan", target_id: "Class_Code" }
+    // Supports formula columns like:
+    // { heading: "Type Count", id: "type_count", column_type: "formula", data_type: "integer", formula: "count",   source: "loan", target_id: "Class_Code" },
+    // { heading: "Average Principal", id: "averagePrincipal", column_type: "formula", data_type: "currency", formula: "average", source: "loan", target_id: "Principal" }
     function buildRows(tbl, sources) {
       validate(tbl); // keep your existing validation if present
 
@@ -1251,52 +1257,120 @@
         prim
       );
 
-      // 4.5) COUNT columns (per primary key), using {column_type:"count", source, target_id}
-      //      We apply the filters that are scoped to that count's source.
-      const countCols = (tbl.columns || []).filter(c => c.column_type === "count");
-      if (countCols.length) {
-        const cache = new Map(); // key: `${src}::${targetId||''}` -> Map(primaryKey -> count)
+      // 4.5) Per-key FORMULA columns (count, average, sum, min, max, distinct_count)
+      const formulaCols = (tbl.columns || []).filter(c => c.column_type === "formula" && typeof c.formula === "string");
+      if (formulaCols.length) {
+        // cache per (src, targetId, normalizedFormula)
+        const cache = new Map(); // key -> Map(primaryKey -> value)
 
-        const getCounts = (src, targetId) => {
-          const cacheKey = `${src}::${targetId || ""}`;
-          if (cache.has(cacheKey)) return cache.get(cacheKey);
+        const norm = (s) => (s || "").toLowerCase().trim()
+          .replace(/^avg$/, "average")
+          .replace(/^distinct$/, "distinct_count");
 
-          const baseSrc   = [...(sources[src] || [])];
-          const srcFilters = (tbl.filters || []).filter(f => (f.source || src) === src);
-          const filtSrc   = Trwth.utils.applyFilters(baseSrc, srcFilters);
+        const toNum = Trwth.utils.toNum || (v => (Number.isFinite(+v) ? +v : 0));
 
-          const m = new Map();
-          for (const r of filtSrc) {
-            const pk = String(r?.[keyId] ?? "");
-            if (!pk) continue;
-
-            if (targetId) {
-              const val = r?.[targetId];
-              // Only count rows where target_id is present/non-empty
-              if (val == null || val === "") continue;
-            }
-
-            m.set(pk, (m.get(pk) || 0) + 1);
-          }
-          cache.set(cacheKey, m);
-          return m;
+        const getScopedRows = (src) => {
+          const rows = [...(sources[src] || [])];
+          const f = (tbl.filters || []).filter(ff => (ff.source || src) === src);
+          return Trwth.utils.applyFilters(rows, f);
         };
 
-        for (const c of countCols) {
-          const src = c.source || prim;
-          if (!src) {
-            console.warn(`[buildRows] count column '${c.id}' missing source; defaulting to primary '${prim}'`);
-          }
-          const counts = getCounts(src || prim, c.target_id);
+        const computeMap = (src, targetId, formulaName) => {
+          const key = `${src}::${targetId || ""}::${formulaName}`;
+          if (cache.has(key)) return cache.get(key);
 
+          const rows = getScopedRows(src);
+          const perKey = new Map();
+
+          for (const r of rows) {
+            const k = String(r?.[keyId] ?? "");
+            if (!k) continue;
+
+            switch (formulaName) {
+              case "count": {
+                if (targetId) {
+                  const v = r?.[targetId];
+                  if (v == null || v === "") break;
+                }
+                perKey.set(k, (perKey.get(k) || 0) + 1);
+                break;
+              }
+
+              case "sum": {
+                if (!targetId) break;
+                const n = toNum(r?.[targetId]);
+                perKey.set(k, (perKey.get(k) || 0) + n);
+                break;
+              }
+
+              case "average": {
+                if (!targetId) break;
+                const n = +r?.[targetId];
+                if (!Number.isFinite(n)) break;
+                let agg = perKey.get(k);
+                if (!agg) agg = { sum: 0, count: 0 };
+                agg.sum += n; agg.count += 1;
+                perKey.set(k, agg);
+                break;
+              }
+
+              case "min":
+              case "max": {
+                if (!targetId) break;
+                const n = +r?.[targetId];
+                if (!Number.isFinite(n)) break;
+                if (!perKey.has(k)) {
+                  perKey.set(k, n);
+                } else {
+                  perKey.set(k, formulaName === "min" ? Math.min(perKey.get(k), n)
+                                                      : Math.max(perKey.get(k), n));
+                }
+                break;
+              }
+
+              case "distinct_count": {
+                if (!targetId) break;
+                let set = perKey.get(k);
+                if (!set) set = new Set();
+                const v = r?.[targetId];
+                if (v != null) set.add(String(v));
+                perKey.set(k, set);
+                break;
+              }
+            }
+          }
+
+          // finalize average & distinct_count
+          if (formulaName === "average") {
+            for (const [k, agg] of perKey) {
+              perKey.set(k, agg.count ? (agg.sum / agg.count) : 0);
+            }
+          } else if (formulaName === "distinct_count") {
+            for (const [k, set] of perKey) {
+              perKey.set(k, set.size);
+            }
+          }
+
+          cache.set(key, perKey);
+          return perKey;
+        };
+
+        for (const c of formulaCols) {
+          const src = c.source || prim;
+          const fName = norm(c.formula);
+          if (!["count","average","sum","min","max","distinct_count"].includes(fName)) {
+            console.warn(`[buildRows] unsupported formula '${c.formula}' on column '${c.id}'`);
+            continue;
+          }
+          const map = computeMap(src, c.target_id, fName);
           merged.forEach(row => {
-            const k = String(row?.[keyId] ?? "");
-            row[c.id] = counts.get(k) || 0;   // write to the *count column's* id (e.g., "type_count")
+            const pk = String(row?.[keyId] ?? "");
+            row[c.id] = map.get(pk) ?? (fName === "count" || fName === "distinct_count" ? 0 : null);
           });
         }
       }
 
-      // 5) Compute function columns on top of aggregated+merged+counted data
+      // 5) Compute "function" columns on top of aggregated+merged+formulas
       const fnCols = (tbl.columns || []).filter(c => c.column_type === "function");
       const result = Trwth.utils.evaluateFunctionColumns(
         merged,
@@ -1307,7 +1381,6 @@
       console.log("[buildRows] out rows:", result.length);
       return result;
     }
-
 
     Trwth.core.renderBoard = () => {
       const cfg = window.boardConfig;
