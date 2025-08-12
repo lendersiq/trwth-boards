@@ -4,12 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="../../styles/base.css">
-  <title>Demo Board 2</title>
+  <title>Average Demo</title>
 </head>
 <body>
   <script>
     window.boardConfig = {
-      board_layout: { cols: 12, row_height: 110, gap: 8, storage_key: "demo2-layout" },
+      board_layout: { cols: 12, row_height: 110, gap: 8, storage_key: "averageDemo-layout" },
       board: [
         {
           id: "commercialDemandDeposits",
@@ -74,8 +74,7 @@
             { heading: "Type", id: "Class_Code", column_type: "data", data_type: "integer", source: "loan" },
             { heading: "Type Count", id: "type_count",  column_type: "formula", data_type: "integer", formula: "count", source: "loan", target_id: "Class_Code" },
             { heading: "Principal", id: "Principal", column_type: "data", data_type: "currency", source: "loan" },
-            //{ heading: "Average Outstanding", id: "YTD_Performance", column_type: "function", data_type: "percent",
-              //fn: "ytdPerformance", params: ["Principal", "Goal"] }
+            { heading: "Average Principal", id: "averagePrincipal",  column_type: "formula", data_type: "currency", formula: "average", source: "loan", target_id: "Principal" },
           ],
           filters: [
             { id: "Owner_Code", source: "loan", filter: "[92]" },
