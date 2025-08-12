@@ -1213,8 +1213,11 @@
       }
     }
 
+    // Supports count columns like:
+    // { heading: "Type Count", id: "type_count", column_type: "count", source: "loan", target_id: "Class_Code" }
     function buildRows(tbl, sources) {
-      validate(tbl) // if you have it, keep it
+      validate(tbl); // keep your existing validation if present
+
       const keyId = tbl?.primary_key?.id;
       if (!keyId) throw new Error("primary_key.id is required");
 
@@ -1248,7 +1251,52 @@
         prim
       );
 
-      // 5) Compute function columns on top of aggregated+merged data
+      // 4.5) COUNT columns (per primary key), using {column_type:"count", source, target_id}
+      //      We apply the filters that are scoped to that count's source.
+      const countCols = (tbl.columns || []).filter(c => c.column_type === "count");
+      if (countCols.length) {
+        const cache = new Map(); // key: `${src}::${targetId||''}` -> Map(primaryKey -> count)
+
+        const getCounts = (src, targetId) => {
+          const cacheKey = `${src}::${targetId || ""}`;
+          if (cache.has(cacheKey)) return cache.get(cacheKey);
+
+          const baseSrc   = [...(sources[src] || [])];
+          const srcFilters = (tbl.filters || []).filter(f => (f.source || src) === src);
+          const filtSrc   = Trwth.utils.applyFilters(baseSrc, srcFilters);
+
+          const m = new Map();
+          for (const r of filtSrc) {
+            const pk = String(r?.[keyId] ?? "");
+            if (!pk) continue;
+
+            if (targetId) {
+              const val = r?.[targetId];
+              // Only count rows where target_id is present/non-empty
+              if (val == null || val === "") continue;
+            }
+
+            m.set(pk, (m.get(pk) || 0) + 1);
+          }
+          cache.set(cacheKey, m);
+          return m;
+        };
+
+        for (const c of countCols) {
+          const src = c.source || prim;
+          if (!src) {
+            console.warn(`[buildRows] count column '${c.id}' missing source; defaulting to primary '${prim}'`);
+          }
+          const counts = getCounts(src || prim, c.target_id);
+
+          merged.forEach(row => {
+            const k = String(row?.[keyId] ?? "");
+            row[c.id] = counts.get(k) || 0;   // write to the *count column's* id (e.g., "type_count")
+          });
+        }
+      }
+
+      // 5) Compute function columns on top of aggregated+merged+counted data
       const fnCols = (tbl.columns || []).filter(c => c.column_type === "function");
       const result = Trwth.utils.evaluateFunctionColumns(
         merged,
@@ -1259,6 +1307,7 @@
       console.log("[buildRows] out rows:", result.length);
       return result;
     }
+
 
     Trwth.core.renderBoard = () => {
       const cfg = window.boardConfig;
