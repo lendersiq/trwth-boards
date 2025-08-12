@@ -22,7 +22,7 @@
   U.formatValue = (v, t) => {
     if (v == null || Number.isNaN(v)) return "";
     switch (t) {
-      case "integer":  return Number(v).toLocaleString();
+      case "integer":  return String(Number(v)); //Number(v).toLocaleString();
       case "currency": return Number(v).toLocaleString(undefined,{style:"currency",currency:"USD"});
       case "percent":  return Math.round(Number(v) * 100) + "%";
       default:         return String(v);
@@ -175,6 +175,95 @@
     });
     return out;
   });
+
+  // ── Aggregate helpers (totals row) ─────────────────────────────────────────
+  U._isNumLike = (x) => {
+    if (x == null) return false;
+    if (typeof x === "number") return Number.isFinite(x);
+    if (typeof x !== "string") return false;
+    const s = x.trim().replace(/[$,%\s,]/g, "");
+    if (!s) return false;
+    return !Number.isNaN(Number(s));
+  };
+  U._toNum = (x) => Number(String(x).trim().replace(/[$,%\s,]/g, ""));
+
+  U._mode = (arr) => {
+    const cnt = new Map(); let best = undefined, bestN = -1;
+    for (const v of arr) {
+      const k = String(v);
+      const n = (cnt.get(k) || 0) + 1;
+      cnt.set(k, n);
+      if (n > bestN) { best = v; bestN = n; }
+    }
+    return best;
+  };
+
+  U.computeAggregateRow = (rows, columns, { skipIds = [], fnRegistry = {} } = {}) => {
+    // 1) Aggregate base (non-function) columns, excluding primary/secondary keys
+    const skip = new Set(skipIds || []);
+    const dataCols = (columns || []).filter(c => c.column_type !== "function" && !skip.has(c.id));
+    const out = {};
+
+    const today = Date.now();
+    for (const c of dataCols) {
+      const type = String(c.data_type || "").toLowerCase();
+      const vals = rows.map(r => r?.[c.id]).filter(v => v != null && v !== "");
+
+      if (!vals.length) { out[c.id] = null; continue; }
+
+      switch (type) {
+        case "currency":
+        case "float":
+        case "number": {
+          let sum = 0; for (const v of vals) if (U._isNumLike(v)) sum += U._toNum(v);
+          out[c.id] = sum;
+          break;
+        }
+        case "percent":
+        case "rate": {
+          let sum = 0, n = 0;
+          for (const v of vals) {
+            if (U._isNumLike(v)) { sum += U._toNum(v); n++; }
+          }
+          out[c.id] = n ? (sum / n) : null; // simple mean
+          break;
+        }
+        case "integer": {
+          // Keep consistent with prior grouping rule: mode for integer columns
+          out[c.id] = U._mode(vals.map(v => U._isNumLike(v) ? U._toNum(v) : v));
+          break;
+        }
+        case "date": {
+          // Average age (days); display as "Xd"
+          const ages = vals
+            .map(v => new Date(v))
+            .filter(d => Number.isFinite(d.getTime()))
+            .map(d => (today - d.getTime()) / 86400000);
+          const avg = ages.length ? (ages.reduce((a,b)=>a+b,0) / ages.length) : null;
+          out[c.id] = (avg == null) ? null : `${Math.round(avg)} days`;
+          break;
+        }
+        default: {
+          // Strings / enums → mode
+          out[c.id] = U._mode(vals.map(v => String(v)));
+        }
+      }
+    }
+
+    // 2) Compute function columns using aggregated inputs
+    const fnCols = (columns || []).filter(c => c.column_type === "function");
+    for (const c of fnCols) {
+      const impl = fnRegistry?.[c.fn]?.implementation;
+      if (typeof impl === "function") {
+        const args = (c.params || []).map(id => out[id]); // use aggregated values
+        try { out[c.id] = impl(...args); } catch { out[c.id] = null; }
+      } else {
+        out[c.id] = null;
+      }
+    }
+
+    return out;
+  };
 
   // Aggregate rows by primary key for the PRIMARY SOURCE ONLY.
   // Rules per data_type:
@@ -726,6 +815,8 @@
     // Main: render grid & cards
     G.renderDashboard = (rootEl, boardConfig, sources, buildRowsForTable) => {
       const U = Trwth.utils;
+      const D = Trwth.dom;
+
       const layout = boardConfig.board_layout || {};
       const cols = layout.cols || 12;
 
@@ -779,137 +870,179 @@
         };
         place(card, pos);
 
-        // Render inline table in the card (mapping OFF here)
+        // Render inline table in the card (header mapping OFF here), plus totals row
         if (block.type === "table") {
           try {
             const rows = buildRowsForTable(block, sources);
-            Trwth.dom.renderTable(
+
+            const tbl = Trwth.dom.renderTable(
               body,
               { title: block.title, columns: block.columns },
               rows,
               {
                 primaryKeyId: block.primary_key?.id,
                 secondaryKeys: block.secondary_keys || [],
-                enableHeaderMapping: true
+                enableHeaderMapping: true // ← card headings should NOT be buttons
               }
             );
+
+            // ── Totals row (skip primary + secondary keys; recompute function columns) ──
+            try {
+              const skipIds = [
+                block.primary_key?.id,
+                ...(block.secondary_keys || [])
+              ].filter(Boolean);
+
+              const agg = U.computeAggregateRow(
+                rows,
+                block.columns,
+                { skipIds, fnRegistry: (window.financial?.functions) || {} }
+              );
+
+              const tfoot = tbl.createTFoot();
+              const trTot = tfoot.insertRow();
+              trTot.className = "board-table__totals";
+
+              block.columns.forEach((c, idx) => {
+                const td = trTot.insertCell();
+                const isSkipped = skipIds.includes(c.id);
+
+                if (isSkipped) {
+                  // Put a label under the first skipped column (usually the PK)
+                  if (idx === 0 || c.id === block.primary_key?.id) {
+                    td.textContent = "Total";
+                    td.style.fontWeight = "700";
+                  } else {
+                    td.textContent = "";
+                  }
+                  return;
+                }
+
+                const v = Object.prototype.hasOwnProperty.call(agg, c.id) ? agg[c.id] : null;
+                const type = String(c.data_type || "").toLowerCase();
+                td.textContent = U.formatValue(v, type);
+                if (["integer","currency","percent","float","number","rate"].includes(type)) {
+                  td.classList.add("num");
+                  td.style.fontWeight = "600";
+                }
+              });
+            } catch (tErr) {
+              console.warn("[totals] failed to render aggregate row:", tErr);
+            }
           } catch (e) {
             console.error("[grid] render error:", e);
             body.textContent = "Render error: " + e.message;
           }
         }
 
-        // Drilldown → modal with PK + secondary + primary-source cols (mapping ON)
+        // Drilldown → modal with PK + secondary + primary-source cols (header mapping ON)
         drillBtn.addEventListener("click", () => {
-        console.log("[drill] click", { blockId: block.id, title: block.title });
-
-        try {
-          const pkId = block.primary_key?.id;
-          const pkCol = (block.columns || []).find(c => c.id === pkId);
-          const prim  = block.primary_key?.source || pkCol?.source;
-
-          if (!pkId || !prim) {
-            console.error("[drill] missing primary key id or source", { pkId, prim });
-            const m = Trwth.dom.createModal(`${block.title || block.id} — error`);
-            m.body.innerHTML = `<p style="color:#f88;margin:0">Missing primary_key id or source.</p>`;
-            m.open();
-            return;
-          }
-
-          // Base rows come from the primary source; apply only filters for that source.
-          const base = [...(sources[prim] || [])];
-          const scoped = (block.filters || []).filter(f => (f.source || prim) === prim);
-          const filtered = Trwth.utils.applyFilters(base, scoped);
-
-          // Column order for drilldown: PK → secondary keys → all block columns from the primary source.
-          const colsById = new Map((block.columns || []).map(c => [c.id, c]));
-          const order = [];
-          const pushUnique = (id) => { if (id && !order.includes(id)) order.push(id); };
-
-          pushUnique(pkId);
-          (block.secondary_keys || []).forEach(pushUnique);
-          (block.columns || []).filter(c => c.source === prim).forEach(c => pushUnique(c.id));
-
-          const drillDefs = order.map(id => colsById.get(id) || { id, heading: id, data_type: undefined });
-
-          console.log("[drill] computed", {
-            pkId,
-            primarySource: prim,
-            secondaryKeys: block.secondary_keys || [],
-            drillCols: drillDefs.map(c => c.id),
-            filteredRows: filtered.length
-          });
-
-          // Build modal and render the table with header mapping ON for PK + secondary keys
-          const modal = Trwth.dom.createModal(`${block.title || block.id} — underlying rows`);
-          const container = modal.body;
-          container.innerHTML = "";
-
+          console.log("[drill] click", { blockId: block.id, title: block.title });
 
           try {
-            const tbl = Trwth.dom.renderTable(
-              container,
-              { title: `${block.title || block.id} — underlying rows`, columns: drillDefs },
-              filtered,
-              {
-                primaryKeyId: pkId,
-                secondaryKeys: block.secondary_keys || [],
-                enableHeaderMapping: true
-              }
-            );
-            if (tbl && !container.contains(tbl)) {
-              console.warn("[drill] returned table not in modal body; appending manually.");
-              container.appendChild(tbl);
+            const pkId = block.primary_key?.id;
+            const pkCol = (block.columns || []).find(c => c.id === pkId);
+            const prim  = block.primary_key?.source || pkCol?.source;
+
+            if (!pkId || !prim) {
+              console.error("[drill] missing primary key id or source", { pkId, prim });
+              const m = Trwth.dom.createModal(`${block.title || block.id} — error`);
+              m.body.innerHTML = `<p style="color:#f88;margin:0">Missing primary_key id or source.</p>`;
+              m.open();
+              return;
             }
-          } catch (e) {
-            console.error("[drill] renderTable threw; falling back to manual table", e);
 
-            // Fallback: minimal manual table so the user still sees data
-            const table = document.createElement("table");
-            table.className = "board-table";
-            const thead = table.createTHead();
-            const hr = thead.insertRow();
-            drillDefs.forEach(def => {
-              const th = document.createElement("th");
-              th.textContent = def.heading || def.id;
-              if (["integer","currency","percent","float","number","rate"]
-                  .includes((def.data_type || "").toLowerCase())) th.classList.add("num");
-              hr.appendChild(th);
+            // Base rows come from the primary source; apply only filters for that source.
+            const base = [...(sources[prim] || [])];
+            const scoped = (block.filters || []).filter(f => (f.source || prim) === prim);
+            const filtered = Trwth.utils.applyFilters(base, scoped);
+
+            // Column order for drilldown: PK → secondary keys → all block columns from the primary source.
+            const colsById = new Map((block.columns || []).map(c => [c.id, c]));
+            const order = [];
+            const pushUnique = (id) => { if (id && !order.includes(id)) order.push(id); };
+
+            pushUnique(pkId);
+            (block.secondary_keys || []).forEach(pushUnique);
+            (block.columns || []).filter(c => c.source === prim).forEach(c => pushUnique(c.id));
+
+            const drillDefs = order.map(id => colsById.get(id) || { id, heading: id, data_type: undefined });
+
+            console.log("[drill] computed", {
+              pkId,
+              primarySource: prim,
+              secondaryKeys: block.secondary_keys || [],
+              drillCols: drillDefs.map(c => c.id),
+              filteredRows: filtered.length
             });
-            const tbody = table.createTBody();
-            filtered.forEach(row => {
-              const tr = tbody.insertRow();
+
+            // Build modal and render table with header mapping ON (PK + secondary)
+            const modal = Trwth.dom.createModal(`${block.title || block.id} — underlying rows`);
+            const container = modal.body;
+            container.innerHTML = "";
+
+            try {
+              const tbl = Trwth.dom.renderTable(
+                container,
+                { title: `${block.title || block.id} — underlying rows`, columns: drillDefs },
+                filtered,
+                {
+                  primaryKeyId: pkId,
+                  secondaryKeys: block.secondary_keys || [],
+                  enableHeaderMapping: true
+                }
+              );
+              if (tbl && !container.contains(tbl)) {
+                console.warn("[drill] returned table not in modal body; appending manually.");
+                container.appendChild(tbl);
+              }
+            } catch (e) {
+              console.error("[drill] renderTable threw; falling back to manual table", e);
+
+              const table = document.createElement("table");
+              table.className = "board-table";
+              const thead = table.createTHead();
+              const hr = thead.insertRow();
               drillDefs.forEach(def => {
-                const td = tr.insertCell();
-                td.textContent = Trwth.utils.formatValue(row?.[def.id], def.data_type);
+                const th = document.createElement("th");
+                th.textContent = def.heading || def.id;
                 if (["integer","currency","percent","float","number","rate"]
-                    .includes((def.data_type || "").toLowerCase())) td.classList.add("num");
+                    .includes((def.data_type || "").toLowerCase())) th.classList.add("num");
+                hr.appendChild(th);
               });
-            });
-            container.appendChild(table);
+              const tbody = table.createTBody();
+              filtered.forEach(row => {
+                const tr = tbody.insertRow();
+                drillDefs.forEach(def => {
+                  const td = tr.insertCell();
+                  td.textContent = Trwth.utils.formatValue(row?.[def.id], def.data_type);
+                  if (["integer","currency","percent","float","number","rate"]
+                      .includes((def.data_type || "").toLowerCase())) td.classList.add("num");
+                });
+              });
+              container.appendChild(table);
+            }
+
+            // Assert something got rendered
+            const rowsRendered = container.querySelectorAll("tbody tr").length;
+            const colsRendered = container.querySelectorAll("thead th").length;
+            console.log("[drill] rendered", { rowsRendered, colsRendered });
+
+            if (!container.querySelector("table")) {
+              console.warn("[drill] no <table> found in modal body; injecting empty table");
+              const t = document.createElement("table");
+              t.className = "board-table";
+              container.appendChild(t);
+            }
+            modal.open();
+
+          } catch (err) {
+            console.error("[drill] fatal error", err);
+            const modal = Trwth.dom.createModal(`${block.title || block.id} — error`);
+            modal.body.innerHTML = `<pre style="white-space:pre-wrap;color:#f88">Drilldown error:\n${err?.stack || err}</pre>`;
+            modal.open();
           }
-
-          // Assert something got rendered
-          const rowsRendered = container.querySelectorAll("tbody tr").length;
-          const colsRendered = container.querySelectorAll("thead th").length;
-          console.log("[drill] rendered", { rowsRendered, colsRendered });
-
-          if (!container.querySelector("table")) {
-            console.warn("[drill] no <table> found in modal body; injecting empty table");
-            const t = document.createElement("table");
-            t.className = "board-table";
-            container.appendChild(t);
-          }
-          modal.open();
-
-        } catch (err) {
-          console.error("[drill] fatal error", err);
-          const modal = Trwth.dom.createModal(`${block.title || block.id} — error`);
-          modal.body.innerHTML = `<pre style="white-space:pre-wrap;color:#f88">Drilldown error:\n${err?.stack || err}</pre>`;
-          modal.open();
-        }
-      });
-
+        });
 
         // Drag/resize + persist
         enableDragResize(grid, card, layout, () => saveLayout(layout.storage_key, grid));
@@ -917,7 +1050,6 @@
 
       if (layout.storage_key) saveLayout(layout.storage_key, grid);
     };
-
 
   })();
     /* ───── 5. CSV Source-loader panel ───── */
