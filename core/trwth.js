@@ -12,19 +12,388 @@
   Trwth.dom    = Trwth.dom    || {};
   Trwth.grid   = Trwth.grid   || {};
   Trwth.core   = Trwth.core   || {};
+  Trwth.IO     = Trwth.IO     || {};
 
-  /* ───── 1. Utilities ───── */
+  /* ───── I/O — CSV + XLSX (no external libraries) ───── */
+  const IO = (Trwth.io = Trwth.io || {});
+
+  // ---------- CSV ----------
+  IO.parsers = IO.parsers || {};
+  IO.parsers.csv = function parseCSV(text) {
+    const out = [];
+    const lines = text.replace(/\r\n?/g, "\n").split("\n");
+    if (!lines.length) return out;
+
+    // Parse one CSV line with quotes
+    const parseLine = (line) => {
+      const cells = [];
+      let cur = "", q = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === '"') {
+          if (q && line[i + 1] === '"') { cur += '"'; i++; }
+          else { q = !q; }
+        } else if (ch === "," && !q) {
+          cells.push(cur); cur = "";
+        } else {
+          cur += ch;
+        }
+      }
+      cells.push(cur);
+      return cells.map(s => s.trim());
+    };
+
+    const headers = parseLine(lines[0] || "");
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line.trim()) continue;
+      const cols = parseLine(line);
+      const row = {};
+      headers.forEach((h, idx) => { row[h] = cols[idx] ?? ""; });
+      out.push(row);
+    }
+    return out;
+  };
+
+  // ---------- File type + dispatcher ----------
+  IO.detectFileType = function detectFileType(file) {
+    const name = (file.name || "").toLowerCase();
+    const mime = file.type || "";
+    if (name.endsWith(".csv") || /csv/.test(mime)) return "csv";
+    if (name.endsWith(".xlsx") || /spreadsheetml/.test(mime)) return "xlsx";
+    return "unknown";
+  };
+
+  IO.fileToRows = async function fileToRows(file) {
+    const kind = IO.detectFileType(file);
+    if (kind === "csv") {
+      const text = await file.text();
+      return IO.parsers.csv(text);
+    }
+    if (kind === "xlsx") {
+      return IO.parsers.xlsx(file);
+    }
+    throw new Error(`Unsupported file type: ${file.name || "(unnamed)"}`);
+  };
+
+  // ---------- Minimal ZIP reader (central directory) ----------
+  // Uses built-in DecompressionStream('deflate-raw') for deflated entries.
+  // Works in modern Chromium/Edge/Safari. If not supported, we throw.
+  class ZipReader {
+    constructor(bytes) {
+      this.bytes = bytes; // Uint8Array
+      this.view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      this.entries = this._parseCentralDirectory();
+    }
+    _readU16(off) { return this.view.getUint16(off, true); }
+    _readU32(off) { return this.view.getUint32(off, true); }
+
+    _findEOCD() {
+      // End of Central Directory record signature: 0x06054b50
+      const sig = 0x06054b50;
+      const { bytes } = this;
+      const maxBack = Math.min(bytes.length, 22 + 0xffff + 256); // EOCD + max comment
+      for (let i = bytes.length - 22; i >= bytes.length - maxBack; i--) {
+        if (i < 0) break;
+        if (this._readU32(i) === sig) return i;
+      }
+      throw new Error("ZIP: EOCD not found");
+    }
+
+    _parseCentralDirectory() {
+      const eocd = this._findEOCD();
+      const total = this._readU16(eocd + 10); // total number of entries
+      const cdSize = this._readU32(eocd + 12);
+      const cdOff  = this._readU32(eocd + 16);
+
+      const sigCDH = 0x02014b50;
+      let off = cdOff;
+      const list = [];
+
+      for (let i = 0; i < total; i++) {
+        if (this._readU32(off) !== sigCDH) break;
+        const compMethod = this._readU16(off + 10);
+        const compSize   = this._readU32(off + 20);
+        const uncompSize = this._readU32(off + 24);
+        const nameLen    = this._readU16(off + 28);
+        const extraLen   = this._readU16(off + 30);
+        const cmtLen     = this._readU16(off + 32);
+        const localOff   = this._readU32(off + 42);
+        const nameBytes  = this.bytes.subarray(off + 46, off + 46 + nameLen);
+        const name = new TextDecoder().decode(nameBytes);
+        list.push({ name, compMethod, compSize, uncompSize, localOff });
+        off += 46 + nameLen + extraLen + cmtLen;
+      }
+      return list;
+    }
+
+    _localDataOffset(entry) {
+      // Local file header signature: 0x04034b50
+      const sigLFH = 0x04034b50;
+      const off = entry.localOff;
+      if (this._readU32(off) !== sigLFH) {
+        throw new Error(`ZIP: bad local header for ${entry.name}`);
+      }
+      const nameLen  = this._readU16(off + 26);
+      const extraLen = this._readU16(off + 28);
+      return off + 30 + nameLen + extraLen;
+    }
+
+    async read(path) {
+      const entry = this.entries.find(e => e.name === path);
+      if (!entry) return null;
+      const start = this._localDataOffset(entry);
+      const end   = start + entry.compSize;
+      const chunk = this.bytes.subarray(start, end);
+      if (entry.compMethod === 0) {
+        return chunk; // stored
+      }
+      if (entry.compMethod === 8) {
+        // deflate (raw)
+        if (!("DecompressionStream" in window)) {
+          throw new Error("This browser lacks DecompressionStream('deflate-raw').");
+        }
+        const stream = new Blob([chunk]).stream()
+          .pipeThrough(new DecompressionStream("deflate-raw"));
+        const ab = await new Response(stream).arrayBuffer();
+        return new Uint8Array(ab);
+      }
+      throw new Error(`ZIP: unsupported compression method ${entry.compMethod} for ${entry.name}`);
+    }
+
+    async readText(path) {
+      const u8 = await this.read(path);
+      if (!u8) return null;
+      return new TextDecoder("utf-8").decode(u8);
+    }
+
+    // Convenience: list entries under a prefix
+    list(prefix) {
+      return this.entries.filter(e => e.name.startsWith(prefix)).map(e => e.name);
+    }
+  }
+
+  IO.zip = {
+    read(bytes) { return new ZipReader(bytes); }
+  };
+
+  // ---------- XLSX (very small subset) ----------
+  IO.xlsx = IO.xlsx || {};
+
+  // Built-in Excel date numFmtIds (plus common date/time ids)
+  IO.xlsx.BUILTIN_DATE_IDS = new Set([14,15,16,17,22,27,30,36,45,46,47,50,57,58]);
+
+  // Excel serial → ISO (1900 epoch with Excel's leap quirk adjustment baked in)
+  IO.xlsx.excelSerialToISO = function excelSerialToISO(serial) {
+    const n = Number(serial);
+    if (!Number.isFinite(n)) return String(serial);
+    const base = Date.UTC(1899, 11, 30); // 1899-12-30 (Excel base)
+    const whole = Math.floor(n);
+    const frac  = n - whole;
+    const ms = whole * 86400000 + Math.round(frac * 86400000);
+    return new Date(base + ms).toISOString().slice(0, 10);
+  };
+
+  // Parse styles.xml → set of style indices (cellXf) that are date/time formats
+  IO.xlsx.readDateStyleSet = function readDateStyleSet(stylesXmlText) {
+    if (!stylesXmlText) return new Set();
+    const doc = new DOMParser().parseFromString(stylesXmlText, "application/xml");
+
+    // Collect custom numFmtId → formatCode
+    const fmtById = {};
+    doc.querySelectorAll("numFmts > numFmt").forEach(n => {
+      const id = Number(n.getAttribute("numFmtId"));
+      const code = (n.getAttribute("formatCode") || "").toLowerCase();
+      if (Number.isFinite(id)) fmtById[id] = code;
+    });
+
+    const isDateFmtId = (id) => {
+      if (IO.xlsx.BUILTIN_DATE_IDS.has(id)) return true;
+      const code = fmtById[id];
+      if (!code) return false;
+      // Strip bracket sections like [h], then look for date/time tokens
+      const clean = code.replace(/\[[^\]]+\]/g, "");
+      return /y|m|d|h|s/.test(clean);
+    };
+
+    const dateSet = new Set();
+    doc.querySelectorAll("cellXfs > xf").forEach((xf, idx) => {
+      const numFmtId = Number(xf.getAttribute("numFmtId"));
+      if (Number.isFinite(numFmtId) && isDateFmtId(numFmtId)) dateSet.add(idx);
+    });
+    return dateSet;
+  };
+
+  IO.xlsx.parseSharedStrings = function parseSharedStrings(xml) {
+    if (!xml) return [];
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    const arr = [];
+    doc.querySelectorAll("sst > si").forEach(si => {
+      // sst/si may have multiple t's; concat them
+      const parts = [];
+      si.querySelectorAll("t").forEach(t => parts.push(t.textContent || ""));
+      arr.push(parts.join(""));
+    });
+    return arr;
+  };
+
+  IO.xlsx.colLettersToIndex = function colLettersToIndex(ref) {
+    // "A1" -> { col:0, row:1 } ; "AB12" -> { col:27, row:12 }
+    const m = String(ref).match(/^([A-Z]+)(\d+)$/i);
+    if (!m) return { col: 0, row: 0 };
+    const letters = m[1].toUpperCase();
+    const row = parseInt(m[2], 10);
+    let col = 0;
+    for (let i = 0; i < letters.length; i++) {
+      col = col * 26 + (letters.charCodeAt(i) - 64);
+    }
+    return { col: col - 1, row };
+  };
+
+  IO.xlsx.firstSheetPath = async function firstSheetPath(zip) {
+    // Try to resolve via workbook + rels. Fallback to sheet1.xml or any worksheets/*.xml
+    const wbXml = await zip.readText("xl/workbook.xml");
+    if (wbXml) {
+      const doc = new DOMParser().parseFromString(wbXml, "application/xml");
+      const firstSheet = doc.querySelector("workbook > sheets > sheet");
+      const rId = firstSheet && firstSheet.getAttribute("r:id");
+      if (rId) {
+        const relsXml = await zip.readText("xl/_rels/workbook.xml.rels");
+        if (relsXml) {
+          const rdoc = new DOMParser().parseFromString(relsXml, "application/xml");
+          const rel = Array.from(rdoc.querySelectorAll("Relationships > Relationship"))
+            .find(n => n.getAttribute("Id") === rId);
+          if (rel) {
+            const target = rel.getAttribute("Target") || "";
+            return target.startsWith("/") ? target.slice(1) : `xl/${target}`;
+          }
+        }
+      }
+    }
+    // Fallbacks
+    if (zip.entries.find(e => e.name === "xl/worksheets/sheet1.xml")) {
+      return "xl/worksheets/sheet1.xml";
+    }
+    const any = zip.list("xl/worksheets/");
+    if (any.length) return any[0];
+    throw new Error("XLSX: no worksheets found");
+  };
+
+  // NOTE: now accepts style index + dateStyleSet to convert date-serials
+  IO.xlsx.cellValue = function cellValue(c, sharedStrings, dateStyleSet) {
+    const t = c.getAttribute("t") || "";              // cell type
+    const sIdx = Number(c.getAttribute("s") || -1);   // style index
+    const vNode = c.querySelector("v");
+    const raw = vNode ? vNode.textContent : "";
+
+    if (t === "s") { // shared string
+      const idx = raw ? parseInt(raw, 10) : 0;
+      return sharedStrings[idx] ?? "";
+    }
+    if (t === "b") return raw === "1";           // boolean
+    if (t === "str") return raw || "";           // cached formula result (string)
+    if (t === "d")   return String(raw).slice(0, 10); // ISO date already
+
+    // default: numeric/general. If style indicates date, convert serial → ISO
+    const num = Number(raw);
+    if (Number.isFinite(num) && dateStyleSet && dateStyleSet.has(sIdx)) {
+      return IO.xlsx.excelSerialToISO(num);
+    }
+    return raw;
+  };
+
+
+  IO.parsers.xlsx = async function parseXLSX(file) {
+  const ab = await file.arrayBuffer();
+  const zip = IO.zip.read(new Uint8Array(ab));
+
+  // shared strings (optional)
+  const sstXml = await zip.readText("xl/sharedStrings.xml");
+  const sharedStrings = IO.xlsx.parseSharedStrings(sstXml);
+
+  // styles → determine which cellXf indices are dates
+  const stylesXml = await zip.readText("xl/styles.xml");
+  const dateStyleSet = IO.xlsx.readDateStyleSet(stylesXml);
+
+  // pick first sheet
+  const sheetPath = await IO.xlsx.firstSheetPath(zip);
+  const sheetXml = await zip.readText(sheetPath);
+  if (!sheetXml) throw new Error("XLSX: worksheet XML not found");
+
+  const doc = new DOMParser().parseFromString(sheetXml, "application/xml");
+
+  // Build sparse grid: row index -> { colIndex: value }
+  const rowsMap = new Map();
+  doc.querySelectorAll("worksheet sheetData row").forEach(rowEl => {
+    const rIndex = parseInt(rowEl.getAttribute("r") || "0", 10);
+    const cells = {};
+    rowEl.querySelectorAll("c").forEach(c => {
+      const ref = c.getAttribute("r") || ""; // e.g., B3
+      const { col } = IO.xlsx.colLettersToIndex(ref);
+      cells[col] = IO.xlsx.cellValue(c, sharedStrings, dateStyleSet);
+    });
+    rowsMap.set(rIndex, cells);
+  });
+
+  // FIRST ROW = headers
+  const allRows = [...rowsMap.keys()].sort((a, b) => a - b);
+  if (!allRows.length) return [];
+
+  const headerRow = rowsMap.get(allRows[0]) || {};
+  const maxCol = Math.max(0, ...Object.keys(headerRow).map(n => +n));
+  const headers = [];
+  for (let c = 0; c <= maxCol; c++) {
+    const h = headerRow[c];
+    headers.push((h == null || h === "") ? `Column${c + 1}` : String(h));
+  }
+
+  const out = [];
+  for (let i = 1; i < allRows.length; i++) {
+    const rIdx = allRows[i];
+    const cells = rowsMap.get(rIdx) || {};
+    const obj = {};
+    headers.forEach((h, col) => { obj[h] = (cells[col] ?? ""); });
+    out.push(obj);
+  }
+  return out;
+};
+
+
+  /* ───── Utilities ───── */
   const U = Trwth.utils;
+
+  U.normalizeKey = (v) => {
+    if (v == null) return "";
+    const s = String(v).trim();
+    if (!s) return "";
+
+    // remove common formatting noise like commas/spaces
+    const sn = s.replace(/[, ]+/g, "");
+
+    // Numeric-like? Coerce to a stable canonical string
+    const n = Number(sn);
+    if (Number.isFinite(n)) {
+      const r = Math.round(n);
+      // Treat 2.0 / 10.000 as integers
+      if (Math.abs(n - r) < 1e-9) return String(r);
+      return String(n);
+    }
+
+    // handle strings like "2.000" explicitly
+    const m = sn.match(/^(\d+)\.0+$/);
+    return m ? m[1] : sn;
+  };
 
   /* number + string helpers */
   U.toNum   = v => (Number.isFinite(+v) ? +v : 0);
-  U.keyOf   = (row, id) => String(row?.[id] ?? "");
+  //U.keyOf   = (row, id) => String(row?.[id] ?? "");
+  U.keyOf = (row, id) => U.normalizeKey(row?.[id]);
   U.formatValue = (v, t) => {
     if (v == null || Number.isNaN(v)) return "";
     switch (t) {
       case "integer":  return String(Number(v)); //Number(v).toLocaleString();
       case "currency": return Number(v).toLocaleString(undefined,{style:"currency",currency:"USD"});
-      case "percent":  return Math.round(Number(v) * 100) + "%";
+      case "percent":  return typeof v === "string" ? v : Math.round(Number(v) * 100) + "%";
       default:         return String(v);
     }
   };
@@ -33,13 +402,70 @@
   U.applyFilters = (rows, filters = []) => {
     if (!filters?.length) return rows;
 
-    // ---- local helpers ----
+    // ─── helpers ──────────────────────────────────────────────────────────────
     const cleanNum = (x) => String(x).trim().replace(/[$,%\s,]/g, "");
     const isNumericLike = (x) =>
       typeof x === "number" ? Number.isFinite(x)
       : typeof x === "string" ? (cleanNum(x) !== "" && !Number.isNaN(Number(cleanNum(x))))
       : false;
     const toNum = (x) => Number(cleanNum(x));
+
+    // Excel serial (# of days since 1899-12-30); allow fractional day (time)
+    const excelSerialToMs = (n) => {
+      const epoch = Date.UTC(1899, 11, 30); // Excel base
+      return epoch + Math.round(Number(n) * 86400000);
+    };
+
+    const dayKey = (ms) => Math.floor(ms / 86400000); // compare dates by day when needed
+
+    const parseDateLoose = (val) => {
+      if (val == null) return NaN;
+      if (val instanceof Date) return val.getTime();
+
+      // number or numeric string → maybe Excel serial or epoch ms
+      if (isNumericLike(val)) {
+        const n = toNum(val);
+        // Heuristic: treat 60..100000 as Excel serial; treat >= 10^10 as epoch ms
+        if (n >= 60 && n < 100000) return excelSerialToMs(n);
+        if (n >= 1e10) return n;                // epoch ms
+        if (n >= 1e5 && n < 1e10) return n * 1000; // epoch seconds → ms
+      }
+
+      const s = String(val).trim();
+      if (!s) return NaN;
+
+      // 1) Native parser (handles ISO, RFC, many month-name forms)
+      const t = Date.parse(s);
+      if (!Number.isNaN(t)) return t;
+
+      // 2) YYYYMMDD
+      let m = s.match(/^(\d{4})(\d{2})(\d{2})$/);
+      if (m) {
+        const y = +m[1], mo = +m[2] - 1, d = +m[3];
+        const ms = Date.UTC(y, mo, d);
+        return Number.isNaN(ms) ? NaN : ms;
+      }
+
+      // 3) YYYY[-/.]MM[-/.]DD (optionally with time hh:mm[:ss])
+      m = s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+      if (m) {
+        const [, yy, mm, dd, hh='0', mi='0', ss='0'] = m;
+        const ms = Date.UTC(+yy, +mm - 1, +dd, +hh, +mi, +ss);
+        return Number.isNaN(ms) ? NaN : ms;
+      }
+
+      // 4) D/M/Y or M/D/Y — disambiguate when first part > 12 → D/M/Y
+      m = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
+      if (m) {
+        let d = +m[1], mo = +m[2], y = +m[3];
+        if (y < 100) y += (y >= 70 ? 1900 : 2000); // 2-digit year heuristic
+        if (d > 12) { /* D/M/Y */ } else { /* assume M/D/Y */ [d, mo] = [mo, d]; }
+        const ms = Date.UTC(y, mo - 1, d);
+        return Number.isNaN(ms) ? NaN : ms;
+      }
+
+      return NaN;
+    };
 
     // split on a top-level separator; ignore inside [...] or quotes
     const splitTop = (s, sep) => {
@@ -59,56 +485,97 @@
       return out;
     };
 
+    // build a predicate for a single term against one field id
     const buildTermPred = (id, term) => {
       term = term.trim();
 
-      // [a,b,c] list — tolerant of numbers/strings
+      // [a,b,c] — supports strings, numbers, and dates (by day equality)
       if (/^\[.*\]$/.test(term)) {
         let arr;
         try { arr = JSON.parse(term.replace(/'(.*?)'/g, '"$1"')); }
         catch { return () => true; }
+
         const strSet = new Set(arr.map(v => String(v)));
-        const numSet = new Set(arr
-          .map(v => toNum(v))
-          .filter(n => Number.isFinite(n)));
+        const numSet = new Set(arr.map(v => toNum(v)).filter(Number.isFinite));
+        const dateDaySet = new Set(
+          arr
+            .map(parseDateLoose)
+            .filter(Number.isFinite)
+            .map(dayKey)
+        );
+
         return (r) => {
           const raw = r?.[id];
           if (raw == null) return false;
-          if (strSet.has(String(raw))) return true;
-          return isNumericLike(raw) && numSet.has(toNum(raw));
+
+          // date match (by day) if any date values were provided
+          if (dateDaySet.size) {
+            const ms = parseDateLoose(raw);
+            if (Number.isFinite(ms) && dateDaySet.has(dayKey(ms))) return true;
+          }
+
+          const sRaw = String(raw);
+          if (strSet.has(sRaw)) return true;
+
+          if (isNumericLike(raw) && numSet.size) {
+            return numSet.has(toNum(raw));
+          }
+          return false;
         };
       }
 
-      // comparators: == != > < >= <= (spaces optional)
+      // comparators: == != > < >= <=  (spaces optional)
       const m = term.match(/^(==|!=|>=|<=|>|<)\s*(.+)$/);
       if (m) {
         const op = m[1];
         const rhsRaw = m[2].replace(/^"(.*)"$|^'(.*)'$/, "$1$2");
-        const rhsNum = isNumericLike(rhsRaw) ? toNum(rhsRaw) : NaN;
+
+        // Prefer date semantics if RHS parses as a date
+        const rhsDate = parseDateLoose(rhsRaw);
+        const rhsNum  = isNumericLike(rhsRaw) ? toNum(rhsRaw) : NaN;
 
         return (r) => {
           const lvRaw = r?.[id];
           if (lvRaw == null) return false;
 
-          // numeric compare if both numeric-like
+          // Date compare
+          if (Number.isFinite(rhsDate)) {
+            const lvDate = parseDateLoose(lvRaw);
+            if (!Number.isFinite(lvDate)) return false;
+
+            const L = lvDate, R = rhsDate;
+            switch (op) {
+              // equality by DAY so "== 2024-01-01" matches that whole day
+              case "==": return dayKey(L) === dayKey(R);
+              case "!=": return dayKey(L) !== dayKey(R);
+              case ">":  return L >  R;
+              case "<":  return L <  R;
+              case ">=": return L >= R;
+              case "<=": return L <= R;
+              default:   return true;
+            }
+          }
+
+          // Numeric compare
           if (isNumericLike(lvRaw) && Number.isFinite(rhsNum)) {
             const lv = toNum(lvRaw);
             switch (op) {
               case "==": return lv === rhsNum;
               case "!=": return lv !== rhsNum;
-              case ">":  return lv >  rhsNum;
-              case "<":  return lv <  rhsNum;
+              case ">":  return lv  > rhsNum;
+              case "<":  return lv  < rhsNum;
               case ">=": return lv >= rhsNum;
               case "<=": return lv <= rhsNum;
             }
           }
-          // fallback: string compare
+
+          // String compare fallback
           const L = String(lvRaw), R = String(rhsRaw);
           switch (op) {
             case "==": return L === R;
             case "!=": return L !== R;
-            case ">":  return L >  R;
-            case "<":  return L <  R;
+            case ">":  return L  > R;
+            case "<":  return L  < R;
             case ">=": return L >= R;
             case "<=": return L <= R;
             default:   return true;
@@ -116,19 +583,27 @@
         };
       }
 
-      // unsupported term → allow
+      // unsupported → pass
       return () => true;
     };
 
-    // build predicate for one filter object (handles A && B || C over SAME id)
+    // build predicate for one filter object (supports A && B || C on same id)
     const buildFilterPred = (f) => {
-      // legacy {op:"in", values:[...]}
+      // legacy: { op:"in", values:[...] }
       if (f.op === "in" && Array.isArray(f.values)) {
         const strSet = new Set(f.values.map(String));
         const numSet = new Set(f.values.map(toNum).filter(Number.isFinite));
+        const dateSet = new Set(
+          f.values.map(parseDateLoose).filter(Number.isFinite).map(dayKey)
+        );
+
         return (r) => {
           const raw = r?.[f.id];
           if (raw == null) return false;
+          if (dateSet.size) {
+            const ms = parseDateLoose(raw);
+            if (Number.isFinite(ms) && dateSet.has(dayKey(ms))) return true;
+          }
           if (strSet.has(String(raw))) return true;
           return isNumericLike(raw) && numSet.has(toNum(raw));
         };
@@ -159,7 +634,8 @@
     cols.forEach(c => {
       if (!c.source || c.source === prim) return;
       (sources[c.source] || []).forEach(sr => {
-        const k = key(sr); if (map.has(k)) Object.assign(map.get(k), sr);
+        const k = key(sr); 
+        if (map.has(k)) Object.assign(map.get(k), sr);
       });
     });
     return [...map.values()];
@@ -416,7 +892,129 @@
     return el;
   };
 
- 
+  D.renderTableBars = function renderTableBars(tableEl, opts = {}) {
+    const settings = {
+      mode: 'cell',              // 'cell' | 'row' | 'cell+row'
+      defaultScale: 'max',       // 'max' | 'range'
+      minWidthPct: 2,
+      animate: true,
+      skipRowSelector: '.board-table__totals',
+      ...opts
+    };
+
+    const table = tableEl instanceof Element ? tableEl : document.querySelector(tableEl);
+    if (!table || !table.tHead) return;
+
+    const wantCell = settings.mode === 'cell' || settings.mode === 'cell+row';
+    const wantRow  = settings.mode === 'row'  || settings.mode === 'cell+row';
+
+    const heads = Array.from(table.tHead.querySelectorAll('th'));
+    const barColIdx = heads.reduce((acc, th, i) => (th.classList.contains('bar') ? (acc.push(i), acc) : acc), []);
+    if (!barColIdx.length) return;
+
+    const bodies = Array.from(table.tBodies || []);
+    const colStats = new Map();
+    barColIdx.forEach(idx => {
+      const vals = [];
+      bodies.forEach(tbody => {
+        Array.from(tbody.rows).forEach(row => {
+          if (row.matches(settings.skipRowSelector)) return;
+          const cell = row.cells[idx];
+          if (!cell) return;
+          const v = parseCellNumber(cell.textContent);
+          if (Number.isFinite(v)) vals.push(v);
+        });
+      });
+      colStats.set(idx, { min: vals.length ? Math.min(...vals) : 0, max: vals.length ? Math.max(...vals) : 0 });
+    });
+
+    bodies.forEach(tbody => {
+      Array.from(tbody.rows).forEach(row => {
+        if (row.matches(settings.skipRowSelector)) return;
+
+        barColIdx.forEach(idx => {
+          const th = heads[idx];
+          const colScale = th?.dataset?.scale || settings.defaultScale;
+
+          const cell = row.cells[idx];
+          if (!cell) return;
+
+          // === CELL BARS ===
+          if (wantCell) {
+            if (!cell.querySelector('.bar-wrap')) { // idempotent
+              const raw = (cell.textContent || '').trim();
+              const value = parseCellNumber(raw);
+              const { min, max } = colStats.get(idx) || { min: 0, max: 0 };
+              const widthPct = computeWidth(value, min, max, colScale, settings.minWidthPct);
+
+              const wrap = document.createElement('div');
+              wrap.className = 'bar-wrap';
+
+              const fill = document.createElement('span');
+              fill.className = 'bar-fill';
+              fill.style.width = widthPct + '%';
+              if (settings.animate) fill.style.transition = 'width .6s ease';
+              fill.classList.add(value < 0 ? 'neg' : 'pos');
+              fill.setAttribute('aria-hidden', 'true');
+
+              const text = document.createElement('span');
+              text.className = 'bar-text';
+              text.textContent = raw;
+
+              cell.textContent = '';
+              wrap.append(fill, text);
+              cell.appendChild(wrap);
+            }
+          }
+        });
+
+        // === ROW SHADING ===
+        if (wantRow) {
+          const refIdx = barColIdx[0];
+          const th = heads[refIdx];
+          const colScale = th?.dataset?.scale || settings.defaultScale;
+          const refCell = row.cells[refIdx];
+          const v = parseCellNumber(refCell ? refCell.textContent : '');
+          const { min, max } = colStats.get(refIdx) || { min: 0, max: 0 };
+          const w = computeWidth(v, min, max, colScale, settings.minWidthPct);
+          row.style.setProperty('--row-bar-width', w + '%');
+          row.classList.add('row-bar');
+        }
+      });
+    });
+
+    // helpers
+    function parseCellNumber(str) {
+      if (!str) return NaN;
+      const isPercent = /%/.test(str);
+      let s = str.replace(/[\s,]/g, '').replace(/\$/g, '').trim();
+      const parenNeg = /^\(.*\)$/.test(s);
+      if (parenNeg) s = s.replace(/[()]/g, '');
+      const num = parseFloat(s.replace('%', ''));
+      if (!Number.isFinite(num)) return NaN;
+      const signed = parenNeg ? -num : num;
+      return isPercent ? signed : signed; // treat "225%" as 225 for distribution
+    }
+    function computeWidth(value, min, max, scale, minWidthPct) {
+      if (!Number.isFinite(value)) return 0;
+      if (scale === 'range') {
+        const span = (max - min) || 1;
+        const pct = ((value - min) / span) * 100;
+        return clamp(pct, value !== 0 ? minWidthPct : 0, 100);
+      }
+      if (min < 0) {
+        const absMax = Math.max(Math.abs(min), Math.abs(max)) || 1;
+        const pct = ((value + absMax) / (2 * absMax)) * 100;
+        return clamp(pct, value !== 0 ? minWidthPct : 0, 100);
+      }
+      const denom = max || 1;
+      const pct = (value / denom) * 100;
+      return clamp(pct, value !== 0 ? minWidthPct : 0, 100);
+    }
+    function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
+  };
+
+  // ---- Your existing renderTable, with minimal additions ----------------
   D.renderTable = (parent, cfg, rows, opts = {}) => {
     const { primaryKeyId, secondaryKeys = [], enableHeaderMapping = false } = opts;
 
@@ -437,13 +1035,11 @@
     const thead = tbl.createTHead();
     const hr = thead.insertRow();
 
-    // Which columns are interactive? (PK + secondary), only if enabled
     const interactive = new Set();
     if (enableHeaderMapping && primaryKeyId) interactive.add(primaryKeyId);
     if (enableHeaderMapping && secondaryKeys?.length) secondaryKeys.forEach(k => interactive.add(k));
     console.log("[renderTable] interactive column ids", [...interactive]);
 
-    // Tiny 2-col CSV -> Map(key->value)
     function parseToMap(text) {
       console.time("[map] parseToMap");
       const map = new Map();
@@ -455,11 +1051,8 @@
           if (ch === '"') {
             if (q && line[i+1] === '"') { cur += '"'; i++; }
             else { q = !q; }
-          } else if (ch === ',' && !q) {
-            out.push(cur); cur = "";
-          } else {
-            cur += ch;
-          }
+          } else if (ch === ',' && !q) { out.push(cur); cur = ""; }
+          else { cur += ch; }
         }
         out.push(cur);
         return out.map(s => s.trim());
@@ -477,15 +1070,19 @@
     (cfg?.columns || []).forEach((c, colIdx) => {
       const th = document.createElement("th");
 
+      // NEW: allow cfg.columns[i].bar === true to mark bar columns
+      if (c?.bar === true) th.classList.add("bar");
+      // NEW: optional per-column scale override: 'max' | 'range'
+      if (c?.barScale) th.dataset.scale = c.barScale;
+
       const numericTypes = ["integer","currency","percent","float","number","rate"];
       const isNum = numericTypes.includes((c.data_type || "").toLowerCase());
       if (isNum) th.classList.add("num");
 
       const isInteractive = interactive.has(c.id);
-      console.log(`[renderTable] th ${c.id} (${c.heading || c.id}) interactive=${isInteractive}`);
+      console.log(`[renderTable] th ${c.id} (${c.heading || c.id}) interactive=${isInteractive}, bar=${th.classList.contains('bar')}`);
 
       if (isInteractive) {
-        // Make the heading itself a button
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "th-map-btn";
@@ -527,7 +1124,7 @@
             console.error("[map] failed:", err);
             btn.textContent = (c.heading || c.id) + " (error)";
           } finally {
-            e.target.value = ""; // allow re-pick later
+            e.target.value = "";
           }
         });
 
@@ -545,13 +1142,25 @@
       const tr = tbody.insertRow();
       (cfg?.columns || []).forEach(c => {
         const td = tr.insertCell();
-        td.textContent = Trwth.utils.formatValue(r?.[c.id], c.data_type);
+        td.innerHTML = Trwth.utils.formatValue(r?.[c.id], c.data_type);
         const numericTypes = ["integer","currency","percent","float","number","rate"];
         if (numericTypes.includes((c.data_type || "").toLowerCase())) {
           td.classList.add("num");
         }
       });
     });
+
+    // NEW: apply bar rendering after the table is populated
+    try {
+      D.renderTableBars(tbl, {
+        mode: (opts.bar && opts.bar.mode) || 'row',  // or cell
+        defaultScale: (opts.bar && opts.bar.scale) || 'max',
+        minWidthPct: (opts.bar && opts.bar.minWidthPct) || 2,
+        animate: (opts.bar && opts.bar.animate) ?? true
+      });
+    } catch (e) {
+      console.warn("[renderTable] bar rendering skipped:", e);
+    }
 
     console.log("[renderTable] done", { rows: rows?.length || 0, cols: cfg?.columns?.length || 0 }, tbl);
     return tbl;
@@ -920,7 +1529,7 @@
 
                 const v = Object.prototype.hasOwnProperty.call(agg, c.id) ? agg[c.id] : null;
                 const type = String(c.data_type || "").toLowerCase();
-                td.textContent = U.formatValue(v, type);
+                td.innerHTML = U.formatValue(v, type);
                 if (["integer","currency","percent","float","number","rate"].includes(type)) {
                   td.classList.add("num");
                   td.style.fontWeight = "600";
@@ -1021,7 +1630,7 @@
                 const tr = tbody.insertRow();
                 drillDefs.forEach(def => {
                   const td = tr.insertCell();
-                  td.textContent = Trwth.utils.formatValue(row?.[def.id], def.data_type);
+                  td.innerHTML = Trwth.utils.formatValue(row?.[def.id], def.data_type);
                   if (["integer","currency","percent","float","number","rate"]
                       .includes((def.data_type || "").toLowerCase())) td.classList.add("num");
                 });
@@ -1142,13 +1751,18 @@
         label.className = "custom-file-upload";
         label.innerHTML = `
           <span class="label-text">Choose <strong>${src}</strong></span>
-          <span class="subtle">(CSV)</span>
+          <span class="subtle">(CSV/XLSX)</span>
           <span class="filename"></span>
         `;
 
         const input = document.createElement("input");
         input.type = "file";
-        input.accept = ".csv,text/csv";
+        input.accept = [
+          ".csv",
+          "text/csv",
+          ".xlsx",
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ].join(",");
         input.className = "hidden-file-input";
 
         label.appendChild(input);
@@ -1162,12 +1776,13 @@
           if (!file) return;
 
           try {
-            const text  = await file.text();
-            const parse = (Trwth.utils && Trwth.utils.parseCSV) || window.parseCSV;
-            state[src]  = parse ? parse(text) : parseCSV(text); // fallback to global parseCSV
+            // Dispatch to CSV/XLSX transparently
+            const rows = await Trwth.io.fileToRows(file);
+            state[src] = rows;
 
             label.classList.add("completed");
             label.querySelector(".filename").textContent = file.name;
+            console.log(`[loader] ${src}: loaded ${rows.length} rows from ${file.name}`);
           } catch (err) {
             console.error(`[loader] parse error for ${src}:`, err);
             delete state[src];
@@ -1175,9 +1790,14 @@
             label.querySelector(".filename").textContent = "Parse error";
           } finally {
             check();
+            // allow re-pick of the same file name later
+            e.target.value = "";
           }
         };
       });
+
+      console.log('state', state)
+
 
       // Render button
       const btn = document.createElement("button");
@@ -1486,24 +2106,54 @@
         container.appendChild(clone);
       });
 
-      // inline minimal styles (match your dark theme)
       const STYLE = `
       :root{
         --bg:#0f1216;--panel:#1a1f26;--panel-2:#161b21;--border:#2a313a;--border-soft:#222a33;
         --fg:#e8ecf1;--fg-muted:#aeb7c2;--shadow:0 8px 22px rgba(0,0,0,.35);
         --radius:12px;--gap:8px;
+        /* bar + stripe colors */
+        --bar-pos:#1e6b9f; --bar-neg:#ff5b5b; --row-bar-color:#1e6b9f; --stripe:rgba(255,255,255,.02);
       }
       html,body{background:var(--bg);color:var(--fg);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans";margin:0}
       .board-grid{display:grid;grid-template-columns:repeat(var(--cols,12),1fr);grid-auto-rows:var(--row-height,110px);gap:var(--gap);padding:12px}
       .board-card{display:flex;flex-direction:column;min-width:0;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
       .board-card__header{padding:10px 12px;font-weight:600;font-size:1.25rem;color:var(--fg);background:linear-gradient(180deg,var(--panel-2),transparent);border-bottom:1px solid var(--border-soft)}
       .board-card__body{min-height:0;overflow:auto;padding:10px 12px}
+
       .board-table{width:100%;border-collapse:separate;border-spacing:0}
       .board-table thead th{position:sticky;top:0;z-index:1;text-align:left;font-weight:600;color:var(--fg);
         background:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,0));border-bottom:1px solid var(--border);padding:8px 10px}
+      .board-table th.num, .board-table td.num{text-align:right}
+
+      /* rows: stripe only when NOT shaded by a row bar */
+      .board-table tbody tr{background:transparent}
+      .board-table tbody tr:nth-child(even):not(.row-bar){background-color:var(--stripe)}
+
       .board-table td{color:var(--fg);padding:8px 10px;border-bottom:1px solid var(--border-soft);white-space:nowrap;text-overflow:ellipsis;overflow:hidden}
-      .board-table tbody tr:nth-child(even) td{background:rgba(255,255,255,.02)}
-      .board-table td.num, .board-table th.num{text-align:right}
+
+      /* in-cell bars (rendered only if mode includes 'cell') */
+      .board-table td .bar-wrap{position:relative;display:block;padding:2px 0}
+      .board-table td .bar-fill{position:absolute;left:0;top:50%;transform:translateY(-50%);height:70%;border-radius:6px;opacity:.25;pointer-events:none}
+      .board-table td .bar-fill.pos{background:var(--bar-pos)}
+      .board-table td .bar-fill.neg{background:var(--bar-neg)}
+      .board-table td .bar-text{position:relative;z-index:1;display:inline-block;padding:0 .25rem;white-space:nowrap}
+
+      /* whole-row shading (when mode includes 'row') — comes AFTER stripe rule */
+      .board-table tr.row-bar{
+        background:
+          linear-gradient(
+            to right,
+            var(--row-bar-color) 0%,
+            var(--row-bar-color) var(--row-bar-width,0%),
+            transparent var(--row-bar-width,0%)
+          );
+        background-size:100% 100%;
+        background-repeat:no-repeat;
+      }
+
+      /* keep totals/footer unchanged */
+      .board-table tfoot .bar-wrap,
+      .board-table .board-table__totals .bar-wrap{display:contents}
       `;
 
       // favicon (same as live page)
@@ -1550,7 +2200,6 @@
       document.body.appendChild(a); a.click();
       setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 800);
     };
-
 
   })();
 
