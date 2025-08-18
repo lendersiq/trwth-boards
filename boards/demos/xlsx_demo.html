@@ -16,10 +16,9 @@
           title: "Turnover by Branch",
           type: "table",
           primary_key: { id: "Branch_Number", source: "turnover.xlsx" },
-          secondary_keys: [],
+          secondary_keys: ["Employee_Name"],
           columns: [
             { heading: "Branch", id: "Branch_Number", column_type: "data", data_type: "integer", source: "turnover.xlsx" },
-            { heading: "Name", id: "Employee", column_type: "data", data_type: "string", source: "turnover.xlsx" },
             { heading: "Involuntary", id: "Involuntary", column_type: "data", data_type: "number", source: "turnover.xlsx" },
             { heading: "Voluntary", id: "Voluntary", column_type: "data", data_type: "number", source: "turnover.xlsx" },
             { heading: "Employees", id: "Employee_Count", column_type: "data", data_type: "number", source: "branch_data" },
