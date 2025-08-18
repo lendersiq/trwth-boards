@@ -354,3 +354,48 @@ html, body {
   padding-top: 10px;
   padding-bottom: 10px;
 }
+
+/* in-cell bars */
+.board-table td .bar-wrap {
+  position: relative;
+  display: block;
+  padding: 2px 0;
+}
+.board-table td .bar-fill {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 70%;
+  border-radius: 6px;
+  opacity: .25;
+  pointer-events: none;
+}
+.board-table td .bar-fill.pos { background: var(--bar-pos, #3aa3ff); }
+.board-table td .bar-fill.neg { background: var(--bar-neg, #ff5b5b); }
+.board-table td .bar-text {
+  position: relative;
+  z-index: 1;
+  display: inline-block;
+  padding: 0 .25rem;
+  white-space: nowrap;
+}
+
+/* optional whole-row shading (when mode includes 'row') */
+.board-table tr.row-bar {
+  background:
+    linear-gradient(
+      to right,
+      var(--row-bar-color, #1e6b9f) 0%,
+      var(--row-bar-color, #1e6b9f) var(--row-bar-width, 0%),
+      transparent var(--row-bar-width, 0%)
+    );
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+}
+
+/* keep totals/footer unchanged */
+.board-table tfoot .bar-wrap,
+.board-table .board-table__totals .bar-wrap {
+  display: contents;
+}
