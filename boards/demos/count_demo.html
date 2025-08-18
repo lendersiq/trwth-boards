@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="../../styles/base.css">
-  <title>Demo Board 2</title>
+  <title>Count Formula Demo</title>
 </head>
 <body>
   <script>
@@ -19,8 +19,9 @@
           secondary_keys: ["Portfolio"],
           columns: [
             { heading: "Branch", id: "Branch_Number", column_type: "data", data_type: "integer", source: "checking" },
-            { heading: "Balance", id: "Average_Balance", column_type: "data", data_type: "currency", source: "checking" },
+            { heading: "Balance", id: "Average_Balance", column_type: "data", data_type: "currency", source: "checking", bar: true, barScale: "max"},
             { heading: "Goal", id: "Commercial_Demand_Goal", column_type: "data", data_type: "currency", source: "branch_data" },
+            { heading: "Count", id: "commercial_count",  column_type: "formula", data_type: "number", formula: "count", source: "checking", target_id: "Average_Balance" },
             { heading: "YTD Performance", id: "YTD_Performance", column_type: "function", data_type: "percent",
               fn: "ytdPerformance", params: ["Average_Balance", "Commercial_Demand_Goal"] }
           ],
@@ -72,10 +73,8 @@
           secondary_keys: ["Portfolio"],
           columns: [
             { heading: "Type", id: "Class_Code", column_type: "data", data_type: "integer", source: "loan" },
-            { heading: "Type Count", id: "type_count",  column_type: "formula", data_type: "integer", formula: "count", source: "loan", target_id: "Class_Code" },
-            { heading: "Principal", id: "Principal", column_type: "data", data_type: "currency", source: "loan" },
-            //{ heading: "Average Outstanding", id: "YTD_Performance", column_type: "function", data_type: "percent",
-              //fn: "ytdPerformance", params: ["Principal", "Goal"] }
+            { heading: "Type Count", id: "type_count",  column_type: "formula", data_type: "number", formula: "count", source: "loan", target_id: "Class_Code" },
+            { heading: "Principal", id: "Principal", column_type: "data", data_type: "currency", source: "loan" }
           ],
           filters: [
             { id: "Owner_Code", source: "loan", filter: "[92]" },
