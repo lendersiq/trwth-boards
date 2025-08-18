@@ -1,14 +1,14 @@
-Branch_Number,branch_name,Commercial_Demand_Goal,Commercial_Savings_Goal 
+Branch_Number,branch_name,Commercial_Demand_Goal,Commercial_Savings_Goal,Employee_Count
 1,1st Skyline Branch
-2,41st Dell Branch,250000,150000
+2,41st Dell Branch,250000,150000,12
 3,92nd Place Branch
-4,33rd Shoreline Branch,300000,200000
+4,33rd Shoreline Branch,300000,200000,20
 5,79th Street Branch
 6,17th Bluff Branch
 7,80th Avenue Branch
 8,85th Arcade Branch
 9,6th Mezzanine Branch
-10,73rd Road Branch,200000,150000
+10,73rd Road Branch,200000,150000,10
 11,79th Crescent Branch
 12,64th Vista Branch
 13,12th Path Branch
