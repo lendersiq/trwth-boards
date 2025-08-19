@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="../../styles/base.css">
+  <title>byGroup Demo</title>
+</head>
+<body>
+  <script>
+    window.boardConfig = {
+      board_layout: { cols: 12, row_height: 110, gap: 8, storage_key: "demo1-layout" },
+      board: [
+        {
+          id: "commercialLoansByType",
+          title: "Commercial Loan Closed by Type",
+          type: "table",
+
+          // Grouping: derive Type_Group from Class_Code
+          group_by: {
+            source: "loans",              // defaults to primary; explicit is nice
+            from_id: "Class_Code",        // read this field
+            as: "Type_Group",             // write label here (used as the key)
+            unmatched: "drop",            // "drop" | "keep" | "label"
+            groups: [
+              { label: "Commercial", where: "[15, 20]" },
+              { label: "Consumer",   where: ">=2 && <=4" },
+              { label: "Other",      where: "*" }        // default/fallback
+            ]
+          },
+
+          // Now group key is the primary key
+          primary_key: { id: "Type_Group", source: "loans" },
+          secondary_keys: ["Portfolio"],
+
+          columns: [
+            { heading: "Type",      id: "Type_Group",  column_type: "data", data_type: "string",   source: "loans" },
+            { heading: "Principal", id: "Principal",   column_type: "data", data_type: "currency", source: "loans" },
+
+            // If this column joins via the *original* Class_Code,
+            // tell merge to use that key:
+            { heading: "Goal", id: "Annual_Goal",
+              column_type: "data", data_type: "currency",
+              source: "loan_classes", join_on: "Class_Code" },
+
+            { heading: "YTD Performance", id: "YTD_Performance",
+              column_type: "function", data_type: "percent",
+              fn: "ytdPerformance", params: ["Principal", "Annual_Goal"] }
+          ],
+
+          // Normal filters stay as *real* filters (strings)
+          filters: [
+            { id: "Date_Opened", source: "loans", where: "> 1982-08-04" }
+          ]
+        }
+      ]
+    };
+  </script>
+  <script src="../../core/trwth.js" defer></script>
+</body>
+</html>

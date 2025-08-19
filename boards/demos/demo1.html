@@ -25,9 +25,9 @@
               fn: "ytdPerformance", params: ["Average_Balance", "Commercial_Demand_Goal"] }
           ],
           filters: [
-            { id: "Branch_Number", source: "checking", filter: "[2,4,10]" },
-            { id: "Class_Code", source: "checking", filter: ">=2 && <=7" },
-            { id: "Open_Date", source: "checking", filter: "> 1982-08-04" }
+            { id: "Branch_Number", source: "checking", where: "[2,4,10]" },
+            { id: "Class_Code", source: "checking", where: ">=2 && <=7" },
+            { id: "Open_Date", source: "checking", where: "> 1982-08-04" }
           ]
         },
         {
@@ -43,7 +43,7 @@
             { heading: "YTD Performance", id: "YTD_Performance", column_type: "function", data_type: "percent",
               fn: "ytdPerformance", params: ["Average_Balance", "Commercial_Savings_Goal"] }
           ],
-          filters: [{ id: "Branch_Number", source: "savings", filter: "[2,4,10]" }]
+          filters: [{ id: "Branch_Number", source: "savings", where: "[2,4,10]" }]
         }
       ]
     };
