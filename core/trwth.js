@@ -302,87 +302,124 @@
     return raw;
   };
 
-
   IO.parsers.xlsx = async function parseXLSX(file) {
-  const ab = await file.arrayBuffer();
-  const zip = IO.zip.read(new Uint8Array(ab));
+    const ab = await file.arrayBuffer();
+    const zip = IO.zip.read(new Uint8Array(ab));
 
-  // shared strings (optional)
-  const sstXml = await zip.readText("xl/sharedStrings.xml");
-  const sharedStrings = IO.xlsx.parseSharedStrings(sstXml);
+    // shared strings (optional)
+    const sstXml = await zip.readText("xl/sharedStrings.xml");
+    const sharedStrings = IO.xlsx.parseSharedStrings(sstXml);
 
-  // styles → determine which cellXf indices are dates
-  const stylesXml = await zip.readText("xl/styles.xml");
-  const dateStyleSet = IO.xlsx.readDateStyleSet(stylesXml);
+    // styles → determine which cellXf indices are dates
+    const stylesXml = await zip.readText("xl/styles.xml");
+    const dateStyleSet = IO.xlsx.readDateStyleSet(stylesXml);
 
-  // pick first sheet
-  const sheetPath = await IO.xlsx.firstSheetPath(zip);
-  const sheetXml = await zip.readText(sheetPath);
-  if (!sheetXml) throw new Error("XLSX: worksheet XML not found");
+    // pick first sheet
+    const sheetPath = await IO.xlsx.firstSheetPath(zip);
+    const sheetXml = await zip.readText(sheetPath);
+    if (!sheetXml) throw new Error("XLSX: worksheet XML not found");
 
-  const doc = new DOMParser().parseFromString(sheetXml, "application/xml");
+    const doc = new DOMParser().parseFromString(sheetXml, "application/xml");
 
-  // Build sparse grid: row index -> { colIndex: value }
-  const rowsMap = new Map();
-  doc.querySelectorAll("worksheet sheetData row").forEach(rowEl => {
-    const rIndex = parseInt(rowEl.getAttribute("r") || "0", 10);
-    const cells = {};
-    rowEl.querySelectorAll("c").forEach(c => {
-      const ref = c.getAttribute("r") || ""; // e.g., B3
-      const { col } = IO.xlsx.colLettersToIndex(ref);
-      cells[col] = IO.xlsx.cellValue(c, sharedStrings, dateStyleSet);
+    // Build sparse grid: row index -> { colIndex: value }
+    const rowsMap = new Map();
+    doc.querySelectorAll("worksheet sheetData row").forEach(rowEl => {
+      const rIndex = parseInt(rowEl.getAttribute("r") || "0", 10);
+      const cells = {};
+      rowEl.querySelectorAll("c").forEach(c => {
+        const ref = c.getAttribute("r") || ""; // e.g., B3
+        const { col } = IO.xlsx.colLettersToIndex(ref);
+        cells[col] = IO.xlsx.cellValue(c, sharedStrings, dateStyleSet);
+      });
+      rowsMap.set(rIndex, cells);
     });
-    rowsMap.set(rIndex, cells);
-  });
 
-  // FIRST ROW = headers
-  const allRows = [...rowsMap.keys()].sort((a, b) => a - b);
-  if (!allRows.length) return [];
+    // FIRST ROW = headers
+    const allRows = [...rowsMap.keys()].sort((a, b) => a - b);
+    if (!allRows.length) return [];
 
-  const headerRow = rowsMap.get(allRows[0]) || {};
-  const maxCol = Math.max(0, ...Object.keys(headerRow).map(n => +n));
-  const headers = [];
-  for (let c = 0; c <= maxCol; c++) {
-    const h = headerRow[c];
-    headers.push((h == null || h === "") ? `Column${c + 1}` : String(h));
-  }
+    const headerRow = rowsMap.get(allRows[0]) || {};
+    const maxCol = Math.max(0, ...Object.keys(headerRow).map(n => +n));
+    const headers = [];
+    for (let c = 0; c <= maxCol; c++) {
+      const h = headerRow[c];
+      headers.push((h == null || h === "") ? `Column${c + 1}` : String(h));
+    }
 
-  const out = [];
-  for (let i = 1; i < allRows.length; i++) {
-    const rIdx = allRows[i];
-    const cells = rowsMap.get(rIdx) || {};
-    const obj = {};
-    headers.forEach((h, col) => { obj[h] = (cells[col] ?? ""); });
-    out.push(obj);
-  }
-  return out;
-};
-
+    const out = [];
+    for (let i = 1; i < allRows.length; i++) {
+      const rIdx = allRows[i];
+      const cells = rowsMap.get(rIdx) || {};
+      const obj = {};
+      headers.forEach((h, col) => { obj[h] = (cells[col] ?? ""); });
+      out.push(obj);
+    }
+    return out;
+  };
 
   /* ───── Utilities ───── */
   const U = Trwth.utils;
 
+  // Normalize keys so "2", "2.0", 2 all match.
   U.normalizeKey = (v) => {
     if (v == null) return "";
     const s = String(v).trim();
-    if (!s) return "";
-
-    // remove common formatting noise like commas/spaces
-    const sn = s.replace(/[, ]+/g, "");
-
-    // Numeric-like? Coerce to a stable canonical string
-    const n = Number(sn);
-    if (Number.isFinite(n)) {
-      const r = Math.round(n);
-      // Treat 2.0 / 10.000 as integers
-      if (Math.abs(n - r) < 1e-9) return String(r);
-      return String(n);
-    }
-
-    // handle strings like "2.000" explicitly
-    const m = sn.match(/^(\d+)\.0+$/);
-    return m ? m[1] : sn;
+    // numeric-like → normalize to number (handles 2 / "2.0")
+    const n = Number(s);
+    if (!Number.isNaN(n)) return String(n);
+    return s;
   };
+
+  // Add fields to base rows before aggregation for any columns
+  // with { source !== primary, join_on: "<fk-field>" }.
+  // Example: for Annual_Goal (from loan_classes) joined on Class_Code.
+  U.rowEnrichJoins = (rows, cols, sources, primarySource) => {
+    const need = (cols || []).filter(c => c.source && c.source !== primarySource && c.join_on);
+    if (!need.length) return rows;
+
+    // Build per-source index by join key
+    const indexes = new Map();
+    const indexOf = (srcName) => {
+      if (indexes.has(srcName)) return indexes.get(srcName);
+      const idx = new Map();
+      (sources[srcName] || []).forEach(r => {
+        // key is whatever the column's join_on references (on the row later)
+        // Here we index by the *foreign table's* join key column = the same name
+        // as specified in join_on (e.g., "Class_Code").
+        const k = U.normalizeKey(r?.[/* fk column name */ undefined]); // will handle below
+      });
+      return idx;
+    };
+
+    // Build specific indexes per (source, join_on) pair
+    const key = (src, on) => `${src}::${on}`;
+    const idxMap = new Map();
+    const ensureIndex = (src, on) => {
+      const k = key(src, on);
+      if (idxMap.has(k)) return idxMap.get(k);
+      const idx = new Map();
+      (sources[src] || []).forEach(r => {
+        const fk = U.normalizeKey(r?.[on]);
+        if (!idx.has(fk)) idx.set(fk, r);
+      });
+      idxMap.set(k, idx);
+      return idx;
+    };
+
+    rows.forEach(r => {
+      need.forEach(col => {
+        const idx = ensureIndex(col.source, col.join_on);
+        const fk = U.normalizeKey(r?.[col.join_on]); // find by same field name in base row
+        const match = idx.get(fk);
+        if (match && col.id in match) {
+          // write the joined value onto the base row under the target id
+          r[col.id] = match[col.id];
+        }
+      });
+    });
+    return rows;
+  };
+
 
   /* number + string helpers */
   U.toNum   = v => (Number.isFinite(+v) ? +v : 0);
@@ -411,57 +448,42 @@
     const toNum = (x) => Number(cleanNum(x));
 
     // Excel serial (# of days since 1899-12-30); allow fractional day (time)
-    const excelSerialToMs = (n) => {
-      const epoch = Date.UTC(1899, 11, 30); // Excel base
-      return epoch + Math.round(Number(n) * 86400000);
-    };
-
-    const dayKey = (ms) => Math.floor(ms / 86400000); // compare dates by day when needed
+    const excelSerialToMs = (n) => Date.UTC(1899, 11, 30) + Math.round(Number(n) * 86400000);
+    const dayKey = (ms) => Math.floor(ms / 86400000); // compare by day
 
     const parseDateLoose = (val) => {
       if (val == null) return NaN;
-      if (val instanceof Date) return val.getTime();
+      if (val instanceof Date) return +val;
 
-      // number or numeric string → maybe Excel serial or epoch ms
       if (isNumericLike(val)) {
         const n = toNum(val);
-        // Heuristic: treat 60..100000 as Excel serial; treat >= 10^10 as epoch ms
-        if (n >= 60 && n < 100000) return excelSerialToMs(n);
-        if (n >= 1e10) return n;                // epoch ms
-        if (n >= 1e5 && n < 1e10) return n * 1000; // epoch seconds → ms
+        if (n >= 60 && n < 100000) return excelSerialToMs(n); // Excel serial
+        if (n >= 1e10) return n;                               // epoch ms
+        if (n >= 1e5 && n < 1e10) return n * 1000;             // epoch s → ms
       }
 
       const s = String(val).trim();
       if (!s) return NaN;
 
-      // 1) Native parser (handles ISO, RFC, many month-name forms)
+      // Native parser (ISO / RFC, many human formats)
       const t = Date.parse(s);
       if (!Number.isNaN(t)) return t;
 
-      // 2) YYYYMMDD
+      // YYYYMMDD
       let m = s.match(/^(\d{4})(\d{2})(\d{2})$/);
-      if (m) {
-        const y = +m[1], mo = +m[2] - 1, d = +m[3];
-        const ms = Date.UTC(y, mo, d);
-        return Number.isNaN(ms) ? NaN : ms;
-      }
+      if (m) return Date.UTC(+m[1], +m[2]-1, +m[3]);
 
-      // 3) YYYY[-/.]MM[-/.]DD (optionally with time hh:mm[:ss])
+      // YYYY[-/.]MM[-/.]DD [hh:mm[:ss]]
       m = s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
-      if (m) {
-        const [, yy, mm, dd, hh='0', mi='0', ss='0'] = m;
-        const ms = Date.UTC(+yy, +mm - 1, +dd, +hh, +mi, +ss);
-        return Number.isNaN(ms) ? NaN : ms;
-      }
+      if (m) return Date.UTC(+m[1], +m[2]-1, +m[3], +(m[4]||0), +(m[5]||0), +(m[6]||0));
 
-      // 4) D/M/Y or M/D/Y — disambiguate when first part > 12 → D/M/Y
+      // D/M/Y or M/D/Y (assume M/D/Y unless first part > 12)
       m = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
       if (m) {
         let d = +m[1], mo = +m[2], y = +m[3];
-        if (y < 100) y += (y >= 70 ? 1900 : 2000); // 2-digit year heuristic
-        if (d > 12) { /* D/M/Y */ } else { /* assume M/D/Y */ [d, mo] = [mo, d]; }
-        const ms = Date.UTC(y, mo - 1, d);
-        return Number.isNaN(ms) ? NaN : ms;
+        if (y < 100) y += (y >= 70 ? 1900 : 2000);
+        if (d <= 12) [d, mo] = [mo, d];
+        return Date.UTC(y, mo-1, d);
       }
 
       return NaN;
@@ -489,7 +511,7 @@
     const buildTermPred = (id, term) => {
       term = term.trim();
 
-      // [a,b,c] — supports strings, numbers, and dates (by day equality)
+      // [a,b,c] — strings, numbers, dates (date match by day)
       if (/^\[.*\]$/.test(term)) {
         let arr;
         try { arr = JSON.parse(term.replace(/'(.*?)'/g, '"$1"')); }
@@ -497,57 +519,41 @@
 
         const strSet = new Set(arr.map(v => String(v)));
         const numSet = new Set(arr.map(v => toNum(v)).filter(Number.isFinite));
-        const dateDaySet = new Set(
-          arr
-            .map(parseDateLoose)
-            .filter(Number.isFinite)
-            .map(dayKey)
-        );
+        const dateDaySet = new Set(arr.map(parseDateLoose).filter(Number.isFinite).map(dayKey));
 
         return (r) => {
           const raw = r?.[id];
-          if (raw == null) return false;
-
-          // date match (by day) if any date values were provided
+          if (raw == null) return true; // missing field → no-op
           if (dateDaySet.size) {
             const ms = parseDateLoose(raw);
             if (Number.isFinite(ms) && dateDaySet.has(dayKey(ms))) return true;
           }
-
-          const sRaw = String(raw);
-          if (strSet.has(sRaw)) return true;
-
-          if (isNumericLike(raw) && numSet.size) {
-            return numSet.has(toNum(raw));
-          }
-          return false;
+          if (strSet.has(String(raw))) return true;
+          return isNumericLike(raw) && numSet.has(toNum(raw));
         };
       }
 
-      // comparators: == != > < >= <=  (spaces optional)
+      // comparators: == != > < >= <=
       const m = term.match(/^(==|!=|>=|<=|>|<)\s*(.+)$/);
       if (m) {
         const op = m[1];
         const rhsRaw = m[2].replace(/^"(.*)"$|^'(.*)'$/, "$1$2");
 
-        // Prefer date semantics if RHS parses as a date
         const rhsDate = parseDateLoose(rhsRaw);
         const rhsNum  = isNumericLike(rhsRaw) ? toNum(rhsRaw) : NaN;
 
         return (r) => {
           const lvRaw = r?.[id];
-          if (lvRaw == null) return false;
+          if (lvRaw == null) return true; // missing field → no-op
 
-          // Date compare
+          // Date compare (if RHS is a date)
           if (Number.isFinite(rhsDate)) {
-            const lvDate = parseDateLoose(lvRaw);
-            if (!Number.isFinite(lvDate)) return false;
-
-            const L = lvDate, R = rhsDate;
+            const L = parseDateLoose(lvRaw), R = rhsDate;
+            if (!Number.isFinite(L)) return false;
+            const dL = dayKey(L), dR = dayKey(R);
             switch (op) {
-              // equality by DAY so "== 2024-01-01" matches that whole day
-              case "==": return dayKey(L) === dayKey(R);
-              case "!=": return dayKey(L) !== dayKey(R);
+              case "==": return dL === dR; // by day
+              case "!=": return dL !== dR;
               case ">":  return L >  R;
               case "<":  return L <  R;
               case ">=": return L >= R;
@@ -570,14 +576,14 @@
           }
 
           // String compare fallback
-          const L = String(lvRaw), R = String(rhsRaw);
+          const Ls = String(lvRaw), Rs = String(rhsRaw);
           switch (op) {
-            case "==": return L === R;
-            case "!=": return L !== R;
-            case ">":  return L  > R;
-            case "<":  return L  < R;
-            case ">=": return L >= R;
-            case "<=": return L <= R;
+            case "==": return Ls === Rs;
+            case "!=": return Ls !== Rs;
+            case ">":  return Ls >  Rs;
+            case "<":  return Ls <  Rs;
+            case ">=": return Ls >= Rs;
+            case "<=": return Ls <= Rs;
             default:   return true;
           }
         };
@@ -587,19 +593,42 @@
       return () => true;
     };
 
-    // build predicate for one filter object (supports A && B || C on same id)
-    const buildFilterPred = (f) => {
+    // compile a full expression (A && B) || C for one field id
+    const compile = (id, exprSrc) => {
+      const expr = String(exprSrc || "").trim();
+      if (!expr || expr === "*") return () => true;
+      const orParts = splitTop(expr, "||");
+      const orPreds = orParts.map(part => {
+        const andParts = splitTop(part, "&&");
+        const andPreds = andParts.map(t => buildTermPred(id, t));
+        return r => andPreds.every(p => p(r));
+      });
+      return r => orPreds.some(p => p(r));
+    };
+
+    // expose compiler so other features (e.g., group_by) can reuse it
+    if (!U.compileWherePred) U.compileWherePred = (id, where) => compile(id, where);
+
+    // SAFEGUARD #1: skip filters whose field is missing on ALL rows
+    const usable = (filters || []).filter(f => {
+      if (!f?.id) return false;
+      const existsSomewhere = rows.some(r => r && Object.prototype.hasOwnProperty.call(r, f.id));
+      if (!existsSomewhere) {
+        console.warn(`[filters] skipping filter on missing field '${f.id}'`);
+        return false;
+      }
+      return true;
+    });
+
+    const preds = usable.map(f => {
       // legacy: { op:"in", values:[...] }
       if (f.op === "in" && Array.isArray(f.values)) {
         const strSet = new Set(f.values.map(String));
         const numSet = new Set(f.values.map(toNum).filter(Number.isFinite));
-        const dateSet = new Set(
-          f.values.map(parseDateLoose).filter(Number.isFinite).map(dayKey)
-        );
-
+        const dateSet = new Set(f.values.map(parseDateLoose).filter(Number.isFinite).map(dayKey));
         return (r) => {
           const raw = r?.[f.id];
-          if (raw == null) return false;
+          if (raw == null) return true; // missing field → no-op
           if (dateSet.size) {
             const ms = parseDateLoose(raw);
             if (Number.isFinite(ms) && dateSet.has(dayKey(ms))) return true;
@@ -609,24 +638,18 @@
         };
       }
 
-      const expr = typeof f.filter === "string" ? f.filter.trim() : "";
-      if (!expr) return () => true;
+      // SAFEGUARD #2: prefer `where`, fall back to legacy `filter` (warn once)
+      const expr = (typeof f.where === "string" ? f.where : f.filter) ?? "";
+      if (typeof f.filter === "string" && !("where" in f)) {
+        console.warn("[filters] `filter` is deprecated; use `where` instead for", f.id);
+      }
+      return compile(f.id, expr);
+    });
 
-      // OR groups
-      const orParts = splitTop(expr, "||");
-      const orPreds = orParts.map(part => {
-        // AND within group
-        const andParts = splitTop(part, "&&");
-        const andPreds = andParts.map(t => buildTermPred(f.id, t));
-        return (r) => andPreds.every(p => p(r));
-      });
-      return (r) => orPreds.some(p => p(r));
-    };
-
-    const preds = filters.map(buildFilterPred);
     return rows.filter(r => preds.every(p => p(r)));
   };
 
+  
   /* merge helpers & formula evaluation */
   U.mergeByKey = (base, sources, keyId, cols, prim) => {
     const map = new Map(), key = r => U.keyOf(r, keyId);
@@ -848,6 +871,44 @@
     console.log("[aggregate] groups:", groups.size, "→ rows:", out.length);
     return out;
   };
+
+  // Derive a new key field from groups of where-clauses.
+  // Example: from_id "Class_Code" → as "Type_Group" with labels.
+  U.deriveGroupField = (rows, groupCfg) => {
+    if (!groupCfg) return rows;
+
+    const {
+      source,          // not used here; rows already from primary
+      from_id,         // e.g., "Class_Code"
+      as,              // e.g., "Type_Group"
+      unmatched = "drop", // "drop" | "keep" | "label"
+      groups = []
+    } = groupCfg;
+
+    if (!from_id || !as || !groups.length) return rows;
+
+    const compiled = groups.map(g => ({
+      label: g.label,
+      pred: U.compileWherePred(from_id, g.where || "*")
+    }));
+
+    const out = [];
+    for (const r of rows) {
+      let label = null;
+      for (const g of compiled) {
+        if (g.pred(r)) { label = g.label; break; }
+      }
+      if (!label) {
+        if (unmatched === "drop") continue;
+        if (unmatched === "label") label = (groupCfg.unmatched_label || "Other");
+        // unmatched === "keep" → leave undefined
+      }
+      const nr = { ...r, [as]: label };
+      out.push(nr);
+    }
+    return out;
+  };
+
 
   /* ───── 2. Dynamic library loader ───── */
   const L = Trwth.loader;
@@ -1795,9 +1856,7 @@
           }
         };
       });
-
       console.log('state', state)
-
 
       // Render button
       const btn = document.createElement("button");
@@ -1842,163 +1901,285 @@
     // { heading: "Type Count", id: "type_count", column_type: "formula", data_type: "integer", formula: "count",   source: "loan", target_id: "Class_Code" },
     // { heading: "Average Principal", id: "averagePrincipal", column_type: "formula", data_type: "currency", formula: "average", source: "loan", target_id: "Principal" }
     function buildRows(tbl, sources) {
-      validate(tbl); // keep your existing validation if present
+      const U = Trwth.utils;
+      const log = (...a) => console.log("[buildRows]", ...a);
 
-      const keyId = tbl?.primary_key?.id;
-      if (!keyId) throw new Error("primary_key.id is required");
+      // ── 0) Validate & resolve primary key + primary source ─────────────────────
+      if (!tbl?.primary_key?.id) throw new Error("primary_key.id is required");
+      const keyId = tbl.primary_key.id;
 
       const keyCol = (tbl.columns || []).find(c => c.id === keyId);
-      const prim   = tbl?.primary_key?.source || keyCol?.source;
+      const prim   = tbl.primary_key.source || keyCol?.source;
       if (!prim) throw new Error("primary_key.source could not be resolved");
 
-      // 1) Base = primary source only
-      const base = [...(sources[prim] || [])];
+      const allCols = tbl.columns || [];
 
-      // 2) Apply ONLY filters scoped to the primary source
+      // Helpers
+      const cleanNum = (x) => String(x).trim().replace(/[$,%\s,]/g, "");
+      const isNumericLike = (x) =>
+        typeof x === "number" ? Number.isFinite(x)
+        : typeof x === "string" ? (cleanNum(x) !== "" && !Number.isNaN(Number(cleanNum(x))))
+        : false;
+      const toNum = (v) => Number.isFinite(+v) ? +v : (isNumericLike(v) ? +cleanNum(v) : 0);
+
+      // ── 1) Start with primary source rows ──────────────────────────────────────
+      const primRowsRaw = [...(sources[prim] || [])];
+
+      // Apply ONLY filters scoped to the primary source
       const primFilters = (tbl.filters || []).filter(f => (f.source || prim) === prim);
-      const filtered = Trwth.utils.applyFilters(base, primFilters);
-      console.log("[buildRows] primary:", prim, "filtered:", filtered.length);
+      let primFiltered = U.applyFilters(primRowsRaw, primFilters);
+      log("primary:", prim, "filtered rows:", primFiltered.length);
 
-      // 3) Aggregate by primary key (exclude any secondary_keys)
-      const aggregated = Trwth.utils.aggregateByPrimary(
-        filtered,
-        keyId,
-        tbl.columns || [],
-        prim,
-        tbl.secondary_keys || []
-      );
+      // ── 2) Optional: GROUP BY (derive a label field) ───────────────────────────
+      // Example:
+      // group_by: { source:"loans", from_id:"Class_Code", as:"Type_Group",
+      //             unmatched:"drop|keep|label", groups:[{label, where}, {label, where}, ...] }
+      const gb = tbl.group_by;
+      let groupIndex = null; // Map<groupKey, Set<join_on values>> for group-aware joins
+      if (gb) {
+        const gbSrc = gb.source || prim;
+        if (gbSrc !== prim) {
+          console.warn("[buildRows] group_by.source differs from primary; only primary supported for labeling in this pass.");
+        }
+        const fromId = gb.from_id;
+        const asId   = gb.as || keyId;
+        const unmatchedMode = (gb.unmatched || "drop").toLowerCase(); // drop|keep|label
 
-      // 4) Merge in non-primary sources (e.g., goals) by key
-      const merged = Trwth.utils.mergeByKey(
-        aggregated,
-        sources,
-        keyId,
-        tbl.columns || [],
-        prim
-      );
+        // compile predicates once
+        const anyGroup = gb.groups?.some(g => g?.where === "*");
+        const compiled = (gb.groups || []).map(g => ({
+          label: g.label,
+          pred: g.where === "*" ? (() => true) : (U.compileWherePred ? U.compileWherePred(fromId, g.where) : (() => true)),
+          where: g.where
+        }));
 
-      // 4.5) Per-key FORMULA columns (count, average, sum, min, max, distinct_count)
-      const formulaCols = (tbl.columns || []).filter(c => c.column_type === "formula" && typeof c.formula === "string");
+        const out = [];
+        groupIndex = new Map(); // groupKey -> Set(join_on candidates) — filled later on demand
+
+        for (const r of primFiltered) {
+          let label = null;
+          for (const g of compiled) {
+            try {
+              if (g.pred(r)) { label = g.label; break; }
+            } catch {
+              // ignore bad predicate
+            }
+          }
+
+          if (!label) {
+            if (unmatchedMode === "drop") continue;
+            if (unmatchedMode === "keep") label = String(r?.[fromId] ?? "");
+            if (unmatchedMode === "label") label = (gb.unmatched_label || "Other");
+            // if still empty and a catch-all exists, give it to that
+            if (!label && anyGroup) {
+              const catchAll = compiled.find(g => g.where === "*");
+              label = catchAll?.label || label;
+            }
+          }
+
+          if (!label) continue; // still no label → drop
+          const copy = { ...r, [asId]: label };
+          out.push(copy);
+        }
+
+        primFiltered = out;
+        // If the group writes to a different key id, ensure primary_key.id sees it
+        if (asId !== keyId) {
+          console.warn("[buildRows] group_by.as differs from primary_key.id; using primary_key.id =", keyId, "but labels were written to", asId);
+        }
+        log("group_by:", { from: gb.from_id, as: asId, rowsLabeled: primFiltered.length });
+      }
+
+      // ── 3) Aggregate by primary key (exclude any secondary_keys) ───────────────
+      const aggregated = U.aggregateByPrimary
+        ? U.aggregateByPrimary(
+            primFiltered,
+            keyId,
+            allCols,
+            prim,
+            tbl.secondary_keys || []
+          )
+        : primFiltered; // fallback if aggregator not present
+      log("aggregated rows:", aggregated.length);
+
+      // ── 4) Merge in non-primary sources (simple key join) ──────────────────────
+      // (For special group-aware join_on, we’ll add an extra step below.)
+      let merged = U.mergeByKey
+        ? U.mergeByKey(aggregated, sources, keyId, allCols, prim)
+        : aggregated;
+
+      // ── 4b) Group-aware joins for columns that specify `join_on` ───────────────
+      // When the primary key is a derived group label (e.g., Type_Group),
+      // and a non-primary column wants to join on e.g. Class_Code, we aggregate
+      // that external source over the set of join keys that appear within each group.
+      const joinOnCols = allCols.filter(c => c.source && c.source !== prim && c.join_on);
+      if (joinOnCols.length) {
+        // Build group -> Set(join_on values) from *primary filtered rows* (pre-aggregation)
+        const groupKeyField = keyId; // primary key field in aggregated/merged rows
+        const joinKeySets = new Map(); // pk -> Set(join_on values)
+        for (const r of primFiltered) {
+          const pk = String(r?.[groupKeyField] ?? "");
+          if (!pk) continue;
+          let set = joinKeySets.get(pk);
+          if (!set) { set = new Set(); joinKeySets.set(pk, set); }
+          for (const c of joinOnCols) {
+            const val = r?.[c.join_on];
+            if (val != null && val !== "") set.add(String(val));
+          }
+        }
+
+        // For each join_on column, compute a value per pk
+        for (const c of joinOnCols) {
+          const srcRowsRaw = [...(sources[c.source] || [])];
+          const scopedFilters = (tbl.filters || []).filter(f => (f.source || c.source) === c.source);
+          const srcRows = U.applyFilters ? U.applyFilters(srcRowsRaw, scopedFilters) : srcRowsRaw;
+
+          // Build map: pk -> aggregated value from srcRows whose join_on is in that pk's joinKey set
+          const valueByPk = new Map();
+
+          for (const [pk, set] of joinKeySets) {
+            if (!set.size) continue;
+
+            let aggNum = null; // sum for numeric; first non-empty for strings
+            let firstStr = null;
+
+            for (const sr of srcRows) {
+              const keyVal = sr?.[c.join_on];
+              if (keyVal == null) continue;
+              if (!set.has(String(keyVal))) continue;
+
+              const v = sr?.[c.id];
+
+              if (isNumericLike(v)) {
+                const n = toNum(v);
+                aggNum = (aggNum == null) ? n : (aggNum + n);
+              } else {
+                if (firstStr == null && v != null && String(v).trim() !== "") {
+                  firstStr = v;
+                }
+              }
+            }
+
+            const finalVal = (aggNum != null) ? aggNum : (firstStr ?? null);
+            valueByPk.set(pk, finalVal);
+          }
+
+          // Write results back into merged rows
+          merged.forEach(row => {
+            const pk = String(row?.[groupKeyField] ?? "");
+            if (!pk) return;
+            if (valueByPk.has(pk)) row[c.id] = valueByPk.get(pk);
+          });
+        }
+      }
+
+      // ── 5) Per-key FORMULA columns (count, average, sum, min, max, distinct…) ──
+      const formulaCols = allCols.filter(c => c.column_type === "formula" && typeof c.formula === "string");
       if (formulaCols.length) {
-        // cache per (src, targetId, normalizedFormula)
-        const cache = new Map(); // key -> Map(primaryKey -> value)
+        // Precompute source-scoped rows; for primary source use the **group-labeled** / filtered rows
+        const scopedCache = new Map(); // src -> rows (already filtered)
+        const getScopedRows = (src) => {
+          if (scopedCache.has(src)) return scopedCache.get(src);
+          if (src === prim) {
+            scopedCache.set(src, primFiltered.slice()); // use labeled/filtered prim rows
+            return primFiltered;
+          }
+          const base = [...(sources[src] || [])];
+          const f = (tbl.filters || []).filter(ff => (ff.source || src) === src);
+          const out = U.applyFilters ? U.applyFilters(base, f) : base;
+          scopedCache.set(src, out);
+          return out;
+        };
 
-        const norm = (s) => (s || "").toLowerCase().trim()
+        const normalizeFormula = (s) => (s || "").toLowerCase().trim()
           .replace(/^avg$/, "average")
           .replace(/^distinct$/, "distinct_count");
 
-        const toNum = Trwth.utils.toNum || (v => (Number.isFinite(+v) ? +v : 0));
-
-        const getScopedRows = (src) => {
-          const rows = [...(sources[src] || [])];
-          const f = (tbl.filters || []).filter(ff => (ff.source || src) === src);
-          return Trwth.utils.applyFilters(rows, f);
-        };
-
-        const computeMap = (src, targetId, formulaName) => {
-          const key = `${src}::${targetId || ""}::${formulaName}`;
-          if (cache.has(key)) return cache.get(key);
+        // Compute each formula per primary key
+        for (const c of formulaCols) {
+          const src = c.source || prim;
+          const fName = normalizeFormula(c.formula);
+          if (!["count","average","sum","min","max","distinct_count"].includes(fName)) {
+            console.warn(`[buildRows] unsupported formula '${c.formula}' on column '${c.id}'`);
+            continue;
+          }
 
           const rows = getScopedRows(src);
           const perKey = new Map();
 
           for (const r of rows) {
-            const k = String(r?.[keyId] ?? "");
-            if (!k) continue;
+            const pk = String(r?.[keyId] ?? "");
+            if (!pk) continue;
 
-            switch (formulaName) {
+            switch (fName) {
               case "count": {
-                if (targetId) {
-                  const v = r?.[targetId];
+                if (c.target_id) {
+                  const v = r?.[c.target_id];
                   if (v == null || v === "") break;
                 }
-                perKey.set(k, (perKey.get(k) || 0) + 1);
+                perKey.set(pk, (perKey.get(pk) || 0) + 1);
                 break;
               }
-
               case "sum": {
-                if (!targetId) break;
-                const n = toNum(r?.[targetId]);
-                perKey.set(k, (perKey.get(k) || 0) + n);
+                if (!c.target_id) break;
+                const n = toNum(r?.[c.target_id]);
+                perKey.set(pk, (perKey.get(pk) || 0) + n);
                 break;
               }
-
               case "average": {
-                if (!targetId) break;
-                const n = +r?.[targetId];
+                if (!c.target_id) break;
+                const n = toNum(r?.[c.target_id]);
                 if (!Number.isFinite(n)) break;
-                let agg = perKey.get(k);
-                if (!agg) agg = { sum: 0, count: 0 };
+                const agg = perKey.get(pk) || { sum: 0, count: 0 };
                 agg.sum += n; agg.count += 1;
-                perKey.set(k, agg);
+                perKey.set(pk, agg);
                 break;
               }
-
               case "min":
               case "max": {
-                if (!targetId) break;
-                const n = +r?.[targetId];
+                if (!c.target_id) break;
+                const n = toNum(r?.[c.target_id]);
                 if (!Number.isFinite(n)) break;
-                if (!perKey.has(k)) {
-                  perKey.set(k, n);
-                } else {
-                  perKey.set(k, formulaName === "min" ? Math.min(perKey.get(k), n)
-                                                      : Math.max(perKey.get(k), n));
-                }
+                if (!perKey.has(pk)) perKey.set(pk, n);
+                else perKey.set(pk, fName === "min" ? Math.min(perKey.get(pk), n) : Math.max(perKey.get(pk), n));
                 break;
               }
-
               case "distinct_count": {
-                if (!targetId) break;
-                let set = perKey.get(k);
+                if (!c.target_id) break;
+                const v = r?.[c.target_id];
+                let set = perKey.get(pk);
                 if (!set) set = new Set();
-                const v = r?.[targetId];
                 if (v != null) set.add(String(v));
-                perKey.set(k, set);
+                perKey.set(pk, set);
                 break;
               }
             }
           }
 
-          // finalize average & distinct_count
-          if (formulaName === "average") {
-            for (const [k, agg] of perKey) {
-              perKey.set(k, agg.count ? (agg.sum / agg.count) : 0);
-            }
-          } else if (formulaName === "distinct_count") {
-            for (const [k, set] of perKey) {
-              perKey.set(k, set.size);
-            }
+          // finalize structures
+          if (fName === "average") {
+            for (const [k, agg] of perKey) perKey.set(k, agg.count ? (agg.sum / agg.count) : 0);
+          } else if (fName === "distinct_count") {
+            for (const [k, set] of perKey) perKey.set(k, set.size);
           }
 
-          cache.set(key, perKey);
-          return perKey;
-        };
-
-        for (const c of formulaCols) {
-          const src = c.source || prim;
-          const fName = norm(c.formula);
-          if (!["count","average","sum","min","max","distinct_count"].includes(fName)) {
-            console.warn(`[buildRows] unsupported formula '${c.formula}' on column '${c.id}'`);
-            continue;
-          }
-          const map = computeMap(src, c.target_id, fName);
+          // write onto merged rows
           merged.forEach(row => {
             const pk = String(row?.[keyId] ?? "");
-            row[c.id] = map.get(pk) ?? (fName === "count" || fName === "distinct_count" ? 0 : null);
+            row[c.id] = perKey.has(pk)
+              ? perKey.get(pk)
+              : (fName === "count" || fName === "distinct_count" ? 0 : null);
           });
         }
       }
 
-      // 5) Compute "function" columns on top of aggregated+merged+formulas
-      const fnCols = (tbl.columns || []).filter(c => c.column_type === "function");
-      const result = Trwth.utils.evaluateFunctionColumns(
-        merged,
-        fnCols,
-        (window.financial && window.financial.functions) || {}
-      );
+      // ── 6) Evaluate classic function columns on top of everything ──────────────
+      const fnCols = allCols.filter(c => c.column_type === "function");
+      const result = U.evaluateFunctionColumns
+        ? U.evaluateFunctionColumns(merged, fnCols, (window.financial && window.financial.functions) || {})
+        : merged;
 
-      console.log("[buildRows] out rows:", result.length);
+      log("out rows:", result.length);
       return result;
     }
 
