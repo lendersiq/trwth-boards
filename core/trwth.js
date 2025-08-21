@@ -1607,117 +1607,161 @@
 
         // Drilldown → modal with PK + secondary + primary-source cols (header mapping ON)
         drillBtn.addEventListener("click", () => {
-          console.log("[drill] click", { blockId: block.id, title: block.title });
+        console.log("[drill] click", { blockId: block.id, title: block.title });
+
+        try {
+          const pkId = block.primary_key?.id;
+          const pkCol = (block.columns || []).find(c => c.id === pkId);
+          const prim  = block.primary_key?.source || pkCol?.source;
+
+          if (!pkId || !prim) {
+            console.error("[drill] missing primary key id or source", { pkId, prim });
+            const m = Trwth.dom.createModal(`${block.title || block.id} — error`);
+            m.body.innerHTML = `<p style="color:#f88;margin:0">Missing primary_key id or source.</p>`;
+            m.open();
+            return;
+          }
+
+          // Base rows: primary source + only filters for that source
+          const base = [...(sources[prim] || [])];
+          const scoped = (block.filters || []).filter(f => (f.source || prim) === prim);
+          const filtered = Trwth.utils.applyFilters(base, scoped);
+
+          // If group_by applies to this primary source, annotate rows with group label (so PK can render),
+          // and remember the original field (from_id) to include in the drill columns.
+          const gb = block.group_by;
+          const gbSrc = gb?.source || prim;
+          const gbFromId = gb?.from_id;
+          const gbAs = gb?.as;
+
+          if (gb && gbSrc === prim && gbFromId && gbAs) {
+            const compile = Trwth.utils.compileWherePred || ((id, where) => (() => true));
+            const rules = (gb.groups || [])
+              .filter(g => typeof g?.label === "string" && typeof g?.where === "string" && g.where.trim() !== "*")
+              .map(g => ({ label: g.label, pred: compile(gbFromId, g.where) }));
+            const hasFallback = (gb.groups || []).some(g => String(g?.where || "").trim() === "*");
+            const policy = (gb.unmatched || "keep"); // "drop" | "keep" | "label"
+
+            for (const r of filtered) {
+              let label = null;
+              for (const g of rules) {
+                if (g.pred(r)) { label = g.label; break; }
+              }
+              if (!label) {
+                if (hasFallback) {
+                  // use the first '*' fallback label
+                  const fb = (gb.groups || []).find(g => String(g?.where || "").trim() === "*");
+                  label = fb?.label ?? null;
+                } else if (policy === "label" && typeof gb.label === "string") {
+                  label = gb.label;
+                } else if (policy === "keep") {
+                  label = String(r?.[gbFromId] ?? "");
+                } else if (policy === "drop") {
+                  // Leave label null; PK cell may be blank, but we still keep row in drilldown
+                }
+              }
+              if (label != null) r[gbAs] = label;
+            }
+          }
+
+          // Column order for drilldown:
+          // PK → secondary keys → (group_by.from_id if present) → all block columns from the primary source (excluding formulas)
+          const colsById = new Map((block.columns || []).map(c => [c.id, c]));
+          const order = [];
+          const pushUnique = (id) => { if (id && !order.includes(id)) order.push(id); };
+
+          pushUnique(pkId);
+          (block.secondary_keys || []).forEach(pushUnique);
+          if (gbFromId) pushUnique(gbFromId); // <— ensure original field is shown
+
+          (block.columns || [])
+            .filter(c => c.source === prim && c.column_type !== "formula")
+            .forEach(c => pushUnique(c.id));
+
+          // Build defs, fabricating one for from_id if it isn't in block.columns
+          const drillDefs = order.map(id => {
+            const def = colsById.get(id);
+            if (def) return def;
+
+            // create a lightweight def for ad-hoc columns (like group_by.from_id)
+            let heading = id;
+            if (gbFromId && id === gbFromId && typeof gb?.from_heading === "string") {
+              heading = gb.from_heading;
+            }
+
+            // naive data_type sniff (optional)
+            let data_type;
+            for (let i = 0; i < filtered.length; i++) {
+              const v = filtered[i]?.[id];
+              if (v != null && v !== "") {
+                const n = Number(String(v).replace(/[$,%\s,]/g, ""));
+                if (!Number.isNaN(n)) { data_type = Number.isInteger(n) ? "integer" : "number"; }
+                break;
+              }
+            }
+            return { id, heading, data_type, source: prim };
+          });
+
+          console.log("[drill] computed", {
+            pkId,
+            primarySource: prim,
+            secondaryKeys: block.secondary_keys || [],
+            drillCols: drillDefs.map(c => c.id),
+            filteredRows: filtered.length,
+            group_from_id: gbFromId
+          });
+
+          // Modal + render, mapping enabled
+          const modal = Trwth.dom.createModal(`${block.title || block.id} — underlying rows`);
+          const container = modal.body;
+          container.innerHTML = "";
 
           try {
-            const pkId = block.primary_key?.id;
-            const pkCol = (block.columns || []).find(c => c.id === pkId);
-            const prim  = block.primary_key?.source || pkCol?.source;
-
-            if (!pkId || !prim) {
-              console.error("[drill] missing primary key id or source", { pkId, prim });
-              const m = Trwth.dom.createModal(`${block.title || block.id} — error`);
-              m.body.innerHTML = `<p style="color:#f88;margin:0">Missing primary_key id or source.</p>`;
-              m.open();
-              return;
-            }
-
-            // Base rows come from the primary source; apply only filters for that source.
-            const base = [...(sources[prim] || [])];
-            const scoped = (block.filters || []).filter(f => (f.source || prim) === prim);
-            const filtered = Trwth.utils.applyFilters(base, scoped);
-
-            // Column order for drilldown: PK → secondary keys → all block columns from the primary source.
-            const colsById = new Map((block.columns || []).map(c => [c.id, c]));
-            const order = [];
-            const pushUnique = (id) => { if (id && !order.includes(id)) order.push(id); };
-
-            pushUnique(pkId);
-            (block.secondary_keys || []).forEach(pushUnique);
-            //(block.columns || []).filter(c => c.source === prim).forEach(c => pushUnique(c.id));
-            (block.columns || [])
-              .filter(c =>
-                c.source === prim &&
-                c.column_type !== "formula"
-              )
-              .forEach(c => pushUnique(c.id))
-
-            const drillDefs = order.map(id => colsById.get(id) || { id, heading: id, data_type: undefined });
-
-            console.log("[drill] computed", {
-              pkId,
-              primarySource: prim,
-              secondaryKeys: block.secondary_keys || [],
-              drillCols: drillDefs.map(c => c.id),
-              filteredRows: filtered.length
-            });
-
-            // Build modal and render table with header mapping ON (PK + secondary)
-            const modal = Trwth.dom.createModal(`${block.title || block.id} — underlying rows`);
-            const container = modal.body;
-            container.innerHTML = "";
-
-            try {
-              const tbl = Trwth.dom.renderTable(
-                container,
-                { title: `${block.title || block.id} — underlying rows`, columns: drillDefs },
-                filtered,
-                {
-                  primaryKeyId: pkId,
-                  secondaryKeys: block.secondary_keys || [],
-                  enableHeaderMapping: true
-                }
-              );
-              if (tbl && !container.contains(tbl)) {
-                console.warn("[drill] returned table not in modal body; appending manually.");
-                container.appendChild(tbl);
+            const tbl = Trwth.dom.renderTable(
+              container,
+              { title: `${block.title || block.id} — underlying rows`, columns: drillDefs },
+              filtered,
+              {
+                primaryKeyId: pkId,
+                secondaryKeys: block.secondary_keys || [],
+                enableHeaderMapping: true
               }
-            } catch (e) {
-              console.error("[drill] renderTable threw; falling back to manual table", e);
-
-              const table = document.createElement("table");
-              table.className = "board-table";
-              const thead = table.createTHead();
-              const hr = thead.insertRow();
+            );
+            if (tbl && !container.contains(tbl)) container.appendChild(tbl);
+          } catch (e) {
+            console.error("[drill] renderTable threw; falling back to manual table", e);
+            const table = document.createElement("table");
+            table.className = "board-table";
+            const thead = table.createTHead();
+            const hr = thead.insertRow();
+            drillDefs.forEach(def => {
+              const th = document.createElement("th");
+              th.textContent = def.heading || def.id;
+              if (["integer","currency","percent","float","number","rate"]
+                  .includes((def.data_type || "").toLowerCase())) th.classList.add("num");
+              hr.appendChild(th);
+            });
+            const tbody = table.createTBody();
+            filtered.forEach(row => {
+              const tr = tbody.insertRow();
               drillDefs.forEach(def => {
-                const th = document.createElement("th");
-                th.textContent = def.heading || def.id;
+                const td = tr.insertCell();
+                td.textContent = Trwth.utils.formatValue(row?.[def.id], def.data_type);
                 if (["integer","currency","percent","float","number","rate"]
-                    .includes((def.data_type || "").toLowerCase())) th.classList.add("num");
-                hr.appendChild(th);
+                    .includes((def.data_type || "").toLowerCase())) td.classList.add("num");
               });
-              const tbody = table.createTBody();
-              filtered.forEach(row => {
-                const tr = tbody.insertRow();
-                drillDefs.forEach(def => {
-                  const td = tr.insertCell();
-                  td.innerHTML = Trwth.utils.formatValue(row?.[def.id], def.data_type);
-                  if (["integer","currency","percent","float","number","rate"]
-                      .includes((def.data_type || "").toLowerCase())) td.classList.add("num");
-                });
-              });
-              container.appendChild(table);
-            }
-
-            const rowsRendered = container.querySelectorAll("tbody tr").length;
-            const colsRendered = container.querySelectorAll("thead th").length;
-            console.log("[drill] rendered", { rowsRendered, colsRendered });
-
-            if (!container.querySelector("table")) {
-              console.warn("[drill] no <table> found in modal body; injecting empty table");
-              const t = document.createElement("table");
-              t.className = "board-table";
-              container.appendChild(t);
-            }
-            modal.open();
-
-          } catch (err) {
-            console.error("[drill] fatal error", err);
-            const modal = Trwth.dom.createModal(`${block.title || block.id} — error`);
-            modal.body.innerHTML = `<pre style="white-space:pre-wrap;color:#f88">Drilldown error:\n${err?.stack || err}</pre>`;
-            modal.open();
+            });
+            container.appendChild(table);
           }
-        });
+
+          modal.open();
+        } catch (err) {
+          console.error("[drill] fatal error", err);
+          const modal = Trwth.dom.createModal(`${block.title || block.id} — error`);
+          modal.body.innerHTML = `<pre style="white-space:pre-wrap;color:#f88">Drilldown error:\n${err?.stack || err}</pre>`;
+          modal.open();
+        }
+      });
 
         // Drag/resize + persist
         enableDragResize(grid, card, layout, () => saveLayout(layout.storage_key, grid));
