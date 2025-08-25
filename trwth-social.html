@@ -1,0 +1,967 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Count Formula Demo - Social (Resilient)</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHBhdGggZmlsbD0iIzJFOEJDMCIgZD0iTTE2IDEyLjhMMzIgMEw0OCAxMi44TDQ4IDUxLjJMMzIgNjRMMTYgNTEuMloiLz48cGF0aCBmaWxsPSIjMEEyNTQwIiBkPSJNMCAwTDE2IDEyLjhMMzIgNjRMMTYgNTEuMloiLz48cGF0aCBmaWxsPSIjNThDNkIxIiBkPSJNNjQgMEw0OCAxMi44TDMyIDY0TDQ4IDUxLjJaIi8+PC9zdmc+"/>
+<style>
+  :root{
+    --bg:#0f1216;--panel:#1a1f26;--panel-2:#161b21;--border:#2a313a;--border-soft:#222a33;
+    --fg:#e8ecf1;--fg-muted:#aeb7c2;--shadow:0 8px 22px rgba(0,0,0,.35);
+    --radius:12px;--gap:8px;
+    --bar-pos:#1e6b9f; --bar-neg:#ff5b5b; --row-bar-color:#1e6b9f; --stripe:rgba(255,255,255,.02);
+  }
+  html,body{background:var(--bg);color:var(--fg);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans";margin:0}
+  .board-grid{display:grid;grid-template-columns:repeat(var(--cols,12),1fr);grid-auto-rows:var(--row-height,110px);gap:var(--gap);padding:12px}
+  .board-card{display:flex;flex-direction:column;min-width:0;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
+  .board-card__header{padding:10px 12px;font-weight:600;font-size:1.25rem;color:var(--fg);background:linear-gradient(180deg,var(--panel-2),transparent);border-bottom:1px solid var(--border-soft)}
+  .board-card__body{min-height:0;overflow:auto;padding:10px 12px}
+
+  .board-table{width:100%;border-collapse:separate;border-spacing:0}
+  .board-table thead th{position:sticky;top:0;z-index:1;text-align:left;font-weight:600;color:var(--fg);
+    background:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,0));border-bottom:1px solid var(--border);padding:8px 10px}
+  .board-table th.num, .board-table td.num{text-align:right}
+
+  .board-table tbody tr{background:transparent}
+  .board-table tbody tr:nth-child(even):not(.row-bar){background-color:var(--stripe)}
+
+  .board-table td{color:var(--fg);padding:8px 10px;border-bottom:1px solid var(--border-soft);white-space:nowrap;text-overflow:ellipsis;overflow:hidden;position:relative;cursor:pointer}
+
+  .board-table td .bar-wrap{position:relative;display:block;padding:2px 0}
+  .board-table td .bar-fill{position:absolute;left:0;top:50%;transform:translateY(-50%);height:70%;border-radius:6px;opacity:.25;pointer-events:none}
+  .board-table td .bar-fill.pos{background:var(--bar-pos)}
+  .board-table td .bar-fill.neg{background:var(--bar-neg)}
+  .board-table td .bar-text{position:relative;z-index:1;display:inline-block;padding:0 .25rem;white-space:nowrap}
+
+  .board-table tr.row-bar{
+    background:
+      linear-gradient(
+        to right,
+        var(--row-bar-color) 0%,
+        var(--row-bar-color) var(--row-bar-width,0%),
+        transparent var(--row-bar-width,0%)
+      );
+    background-size:100% 100%;
+    background-repeat:no-repeat;
+  }
+
+  .cell-emotions {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    display: flex;
+    gap: 2px;
+    flex-wrap: wrap;
+    max-width: 60px;
+    z-index: 10;
+    pointer-events: none;
+  }
+
+  .emotion-indicator {
+    font-size: 12px;
+    opacity: 0.8;
+    text-shadow: 0 0 2px rgba(0,0,0,0.8);
+  }
+
+  .emotion-popup {
+    position: fixed;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 15px;
+    box-shadow: var(--shadow);
+    z-index: 1000;
+    min-width: 220px;
+  }
+
+  .emotion-selector {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .emotion-btn {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px;
+    cursor: pointer;
+    font-size: 18px;
+    text-align: center;
+    transition: all 0.2s;
+  }
+  .emotion-btn:hover { background: var(--border); transform: scale(1.08); }
+  .emotion-btn.selected { background: var(--bar-pos); border-color: var(--bar-pos); }
+
+  .emotion-count { font-size: 12px; color: var(--fg-muted); }
+
+  .user-status {
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 12px;
+    font-size: 12px;
+    color: var(--fg-muted);
+    z-index: 100;
+  }
+  .online-indicator {
+    display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;
+  }
+  .online-indicator.online { background:#66BB6A; }
+  .online-indicator.offline { background:#D32F2F; }
+
+  .email-modal {
+    position: fixed; inset:0; background: rgba(0,0,0,.7);
+    display:flex; align-items:center; justify-content:center; z-index:2000;
+  }
+  .email-modal-content {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 22px; max-width: 420px; width: 92%;
+  }
+  .email-input {
+    width:100%; padding:10px; margin:10px 0; background:var(--panel-2);
+    border:1px solid var(--border); border-radius:6px; color:var(--fg); font-size:14px;
+  }
+  .btn {
+    background:var(--bar-pos); color:#fff; border:none; padding:10px 16px; border-radius:6px;
+    cursor:pointer; font-size:14px; transition:opacity .2s;
+  }
+  .btn:hover{opacity:.85}
+  .btn:disabled{opacity:.5; cursor:not-allowed;}
+</style>
+</head>
+<body>
+
+<div class="user-status" aria-live="polite">
+  <span class="online-indicator" id="onlineIndicator" title="Connectivity status"></span>
+  <span id="userEmail">Loading user…</span>
+</div>
+
+<div class="board-grid" style="--cols: 12; --row-height: 110px; --gap: 8px;">
+  <div class="board-card" data-block-id="commercialDemandDeposits" data-x="1" data-y="1" data-w="6" data-h="3" tabindex="0" style="grid-area: 1 / 1 / span 3 / span 6;">
+    <div class="board-card__header">Commercial Demand Deposits</div>
+    <div class="board-card__body">
+      <section class="board-section">
+        <table class="board-table">
+          <thead>
+            <tr>
+              <th class="num">Branch</th>
+              <th class="bar num" data-scale="max">Balance</th>
+              <th class="num">Goal</th>
+              <th class="num">Count</th>
+              <th class="num">YTD Performance</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="row-bar" style="--row-bar-width: 49.741817231998915%;">
+              <td class="num">10</td>
+              <td class="num">$280,644.84</td>
+              <td class="num">$200,000.00</td>
+              <td class="num">2</td>
+              <td class="num"><span style="color: #66BB6A;">222.69%</span></td>
+            </tr>
+            <tr class="row-bar" style="--row-bar-width: 100%;">
+              <td class="num">2</td>
+              <td class="num">$564,203.03</td>
+              <td class="num">$250,000.00</td>
+              <td class="num">3</td>
+              <td class="num"><span style="color: #66BB6A;">358.15%</span></td>
+            </tr>
+            <tr class="row-bar" style="--row-bar-width: 2.556069222102547%;">
+              <td class="num">4</td>
+              <td class="num">$14,421.42</td>
+              <td class="num">$300,000.00</td>
+              <td class="num">1</td>
+              <td class="num"><span style="color: #D32F2F;">7.63%</span></td>
+            </tr>
+          </tbody>
+          <tfoot>
+            <tr class="board-table__totals">
+              <td style="font-weight: 700;">Total</td>
+              <td class="num" style="font-weight: 600;">$859,269.29</td>
+              <td class="num" style="font-weight: 600;">$750,000.00</td>
+              <td class="num" style="font-weight: 600;">6</td>
+              <td class="num" style="font-weight: 600;"><span style="color: #66BB6A;">181.82%</span></td>
+            </tr>
+          </tfoot>
+        </table>
+      </section>
+    </div>
+  </div>
+
+  <div class="board-card" data-block-id="commercialSavingsDeposits" data-x="7" data-y="1" data-w="6" data-h="3" tabindex="0" style="grid-area: 1 / 7 / span 3 / span 6;">
+    <div class="board-card__header">Commercial Savings Deposits</div>
+    <div class="board-card__body">
+      <section class="board-section">
+        <table class="board-table">
+          <thead>
+            <tr>
+              <th class="num">Branch</th>
+              <th class="num">Balance</th>
+              <th class="num">Goal</th>
+              <th class="num">YTD Performance</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="num">10</td>
+              <td class="num">$280,644.84</td>
+              <td class="num">$150,000.00</td>
+              <td class="num"><span style="color: #66BB6A;">296.91%</span></td>
+            </tr>
+            <tr>
+              <td class="num">2</td>
+              <td class="num">$1,340,956.78</td>
+              <td class="num">$150,000.00</td>
+              <td class="num"><span style="color: #66BB6A;">1,418.69%</span></td>
+            </tr>
+            <tr>
+              <td class="num">4</td>
+              <td class="num">$17,112.28</td>
+              <td class="num">$200,000.00</td>
+              <td class="num"><span style="color: #D32F2F;">13.58%</span></td>
+            </tr>
+          </tbody>
+          <tfoot>
+            <tr class="board-table__totals">
+              <td style="font-weight: 700;">Total</td>
+              <td class="num" style="font-weight: 600;">$1,638,713.90</td>
+              <td class="num" style="font-weight: 600;">$500,000.00</td>
+              <td class="num" style="font-weight: 600;"><span style="color: #66BB6A;">520.11%</span></td>
+            </tr>
+          </tfoot>
+        </table>
+      </section>
+    </div>
+  </div>
+
+  <div class="board-card" data-block-id="commercialLoans" data-x="1" data-y="4" data-w="6" data-h="3" tabindex="0" style="grid-area: 4 / 1 / span 3 / span 6;">
+    <div class="board-card__header">Commercial Loans closed this year</div>
+    <div class="board-card__body">
+      <section class="board-section">
+        <table class="board-table">
+          <thead>
+            <tr>
+              <th class="num">Officer</th>
+              <th class="num">Principal</th>
+              <th class="num">Goal</th>
+              <th class="num">YTD Performance</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="num">92</td>
+              <td class="num">$2,136,798.74</td>
+              <td class="num">$219,678.80</td>
+              <td class="num"><span style="color: #66BB6A;">1,543.62%</span></td>
+            </tr>
+          </tbody>
+          <tfoot>
+            <tr class="board-table__totals">
+              <td style="font-weight: 700;">Total</td>
+              <td class="num" style="font-weight: 600;">$2,136,798.74</td>
+              <td class="num" style="font-weight: 600;">$219,678.80</td>
+              <td class="num" style="font-weight: 600;"><span style="color: #66BB6A;">1,543.62%</span></td>
+            </tr>
+          </tfoot>
+        </table>
+      </section>
+    </div>
+  </div>
+
+  <div class="board-card" data-block-id="uniqueLoanTypes" data-x="7" data-y="4" data-w="6" data-h="3" tabindex="0" style="grid-area: 4 / 7 / span 3 / span 6;">
+    <div class="board-card__header">Unique loan type count</div>
+    <div class="board-card__body">
+      <section class="board-section">
+        <table class="board-table">
+          <thead>
+            <tr>
+              <th class="num">Type</th>
+              <th class="num">Type Count</th>
+              <th class="num">Principal</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="num">20</td>
+              <td class="num">2</td>
+              <td class="num">$2,136,798.74</td>
+            </tr>
+          </tbody>
+          <tfoot>
+            <tr class="board-table__totals">
+              <td style="font-weight: 700;">Total</td>
+              <td class="num" style="font-weight: 600;">2</td>
+              <td class="num" style="font-weight: 600;">$2,136,798.74</td>
+            </tr>
+          </tfoot>
+        </table>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+class SocialDashboard {
+  constructor() {
+    this.db = null;
+    this.dbName = 'SocialDashboardDB';
+    this.dbVersion = 3; // bump version to ensure fresh, consistent stores
+    this.userEmail = null;
+    this.isOnline = navigator.onLine;
+    this.emotions = ['😊', '😐', '😔', '👍', '👎', '❤️', '🔥', '💡'];
+    this.currentPopup = null;
+    this.syncQueue = [];
+    this.initialized = false;
+
+    this.init();
+  }
+
+  async init() {
+    try {
+      window.addEventListener('online', () => this.handleOnlineStatus(true));
+      window.addEventListener('offline', () => this.handleOnlineStatus(false));
+      this.updateOnlineIndicator();
+
+      await this.initDB();
+      await this.checkUserEmail();
+      this.setupCellInteractions();
+      await this.loadEmotionsFromTables();
+      this.setupPeriodicSync();
+      await this.logInteraction('page_visit');
+      this.initialized = true;
+    } catch (err) {
+      console.error('[init] failed', err);
+    }
+  }
+
+  /* ---------- IndexedDB Bootstrapping ---------- */
+  async initDB() {
+    if (this.db) {
+      try {
+        this.db.close();
+      } catch {}
+      this.db = null;
+    }
+
+    this.db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open(this.dbName, this.dbVersion);
+
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        db.onversionchange = () => {
+          try { db.close(); } catch {}
+        };
+        resolve(db);
+      };
+      request.onupgradeneeded = (event) => {
+        const db = event.target.result;
+        // Create/ensure stores
+        if (!db.objectStoreNames.contains('users')) {
+          const userStore = db.createObjectStore('users', { keyPath: 'email' });
+          userStore.createIndex('lastActive', 'lastActive');
+        }
+        if (!db.objectStoreNames.contains('tables')) {
+          const tableStore = db.createObjectStore('tables', { keyPath: 'b' });
+          tableStore.createIndex('updated', 'updated');
+        }
+        if (!db.objectStoreNames.contains('interactions')) {
+          const interactionStore = db.createObjectStore('interactions', { keyPath: 'id', autoIncrement: true });
+          interactionStore.createIndex('userEmail', 'userEmail');
+          interactionStore.createIndex('timestamp', 'timestamp');
+          interactionStore.createIndex('synced', 'synced');
+        }
+        // Drop legacy store if present
+        if (db.objectStoreNames.contains('emotions')) {
+          db.deleteObjectStore('emotions');
+        }
+      };
+    });
+  }
+
+  async getStore(storeName, mode = 'readonly') {
+    // Ensure DB and store exist even if user cleared storage mid-session
+    if (!this.db || !this.db.objectStoreNames.contains(storeName)) {
+      await this.initDB();
+    }
+    if (!this.db.objectStoreNames.contains(storeName)) {
+      throw new Error(`Store ${storeName} missing after init`);
+    }
+    return this.db.transaction([storeName], mode).objectStore(storeName);
+  }
+
+  /* ---------- User Handling ---------- */
+  async checkUserEmail() {
+    try {
+      const store = await this.getStore('users', 'readonly');
+      const users = await this.getAllFromStore(store);
+      if (!users || users.length === 0) {
+        await this.promptForEmail();
+      } else {
+        const user = users.sort((a, b) => (b.lastActive || 0) - (a.lastActive || 0))[0];
+        this.userEmail = user.email;
+        await this.updateUserActivity();
+      }
+      this.updateUserDisplay();
+    } catch (error) {
+      console.warn('[checkUserEmail] falling back to prompt', error);
+      await this.promptForEmail();
+    }
+  }
+
+  async promptForEmail() {
+    return new Promise((resolve) => {
+      const modal = document.createElement('div');
+      modal.className = 'email-modal';
+      modal.innerHTML = `
+        <div class="email-modal-content" role="dialog" aria-modal="true" aria-label="Enter your email">
+          <h3 style="margin-top:0">Welcome to Social Dashboard</h3>
+          <p>Please enter your email address to participate in social interactions:</p>
+          <input type="email" class="email-input" id="emailInput" placeholder="your.email@company.com" required>
+          <div style="margin-top: 12px; text-align: right; display:flex; gap:8px; justify-content:flex-end;">
+            <button class="btn" id="submitEmail">Continue</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+
+      const emailInput = modal.querySelector('#emailInput');
+      const submitBtn = modal.querySelector('#submitEmail');
+
+      const handleSubmit = async () => {
+        const email = (emailInput.value || '').trim();
+        if (this.validateEmail(email)) {
+          this.userEmail = email;
+          await this.saveUser(email);
+          await this.updateUserActivity();
+          this.updateUserDisplay();
+          document.body.removeChild(modal);
+          resolve();
+        } else {
+          alert('Please enter a valid email address');
+          emailInput.focus();
+        }
+      };
+
+      submitBtn.addEventListener('click', handleSubmit);
+      emailInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') handleSubmit();
+        if (e.key === 'Escape') {
+          // Optional: allow dismiss (read-only mode)
+          document.body.removeChild(modal);
+          resolve();
+        }
+      });
+      emailInput.focus();
+    });
+  }
+
+  validateEmail(email) {
+    const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return re.test(email);
+  }
+
+  async saveUser(email) {
+    try {
+      const store = await this.getStore('users', 'readwrite');
+      await this.putInStore(store, {
+        email, lastActive: Date.now(), createdAt: Date.now(), lastSync: 0
+      });
+    } catch (error) {
+      console.error('[saveUser]', error);
+    }
+  }
+
+  async updateUserActivity() {
+    if (!this.userEmail) return;
+    try {
+      const store = await this.getStore('users', 'readwrite');
+      const user = await this.getFromStore(store, this.userEmail);
+      const now = Date.now();
+      if (user) {
+        user.lastActive = now;
+        await this.putInStore(store, user);
+      } else {
+        // Recreate user if cleared
+        await this.putInStore(store, { email: this.userEmail, lastActive: now, createdAt: now, lastSync: 0 });
+      }
+    } catch (error) {
+      console.error('[updateUserActivity]', error);
+    }
+  }
+
+  updateUserDisplay() {
+    const el = document.getElementById('userEmail');
+    el.textContent = this.userEmail || 'Guest';
+  }
+
+  /* ---------- Connectivity ---------- */
+  handleOnlineStatus(online) {
+    this.isOnline = online;
+    this.updateOnlineIndicator();
+    if (online) {
+      this.syncWithServer();
+      this.processServerUpdates();
+    }
+  }
+  updateOnlineIndicator() {
+    const ind = document.getElementById('onlineIndicator');
+    ind.className = `online-indicator ${this.isOnline ? 'online' : 'offline'}`;
+    ind.title = this.isOnline ? 'Online' : 'Offline';
+  }
+
+  /* ---------- Table & Cell Interactions ---------- */
+  setupCellInteractions() {
+    document.querySelectorAll('.board-table tbody td').forEach((cell) => {
+      const table = cell.closest('table');
+      const card = cell.closest('[data-block-id]');
+      const blockId = card ? card.getAttribute('data-block-id') : '';
+      const row = cell.parentElement;
+      const rowIndex = Array.from(row.parentElement.children).indexOf(row);
+      const colIndex = Array.from(row.children).indexOf(cell);
+      const cellId = `${blockId}_${rowIndex}_${colIndex}`;
+      cell.setAttribute('data-cell-id', cellId);
+      cell.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.showEmotionPopup(cell, cellId);
+      });
+    });
+
+    document.addEventListener('click', (e) => {
+      if (this.currentPopup && !this.currentPopup.contains(e.target)) {
+        this.closeEmotionPopup();
+      }
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') this.closeEmotionPopup();
+    });
+  }
+
+  showEmotionPopup(cell, cellId) {
+    this.closeEmotionPopup();
+
+    const popup = document.createElement('div');
+    popup.className = 'emotion-popup';
+    const rect = cell.getBoundingClientRect();
+    popup.style.left = Math.min(rect.right + 10, window.innerWidth - 240) + 'px';
+    popup.style.top = Math.max(rect.top, 10) + 'px';
+    popup.innerHTML = `
+      <div style="margin-bottom:8px;font-weight:600;">React to this cell:</div>
+      <div class="emotion-selector">
+        ${this.emotions.map(e => `<div class="emotion-btn" data-emotion="${e}" aria-label="React ${e}">${e}</div>`).join('')}
+      </div>
+      <div class="emotion-count" id="emotionCount">Loading…</div>
+    `;
+
+    popup.querySelectorAll('.emotion-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const emotion = btn.getAttribute('data-emotion');
+        await this.addEmotion(cellId, emotion);
+        this.closeEmotionPopup();
+      });
+    });
+
+    document.body.appendChild(popup);
+    this.currentPopup = popup;
+    this.updateEmotionCount(cellId);
+  }
+  closeEmotionPopup() {
+    if (this.currentPopup) {
+      this.currentPopup.remove();
+      this.currentPopup = null;
+    }
+  }
+
+  async addEmotion(cellId, emotion) {
+    try {
+      const [blockId, rStr, cStr] = cellId.split('_');
+      const rowIndex = parseInt(rStr, 10);
+      const colIndex = parseInt(cStr, 10);
+
+      let tableData = await this.getTableData(blockId);
+      if (!tableData) {
+        tableData = this.extractTableStructure(blockId);
+      }
+
+      // Guard against DOM/data drift
+      if (!tableData.r[rowIndex]) {
+        tableData = this.extractTableStructure(blockId);
+      }
+      if (!tableData || !tableData.r[rowIndex]) return;
+      const row = tableData.r[rowIndex];
+      if (!row.c[colIndex]) return;
+      const targetCell = row.c[colIndex];
+
+      // Remove previous emotion by this user for this cell
+      targetCell.e = (targetCell.e || []).filter(entry => entry.u !== this.userEmail);
+      // Push new emotion
+      targetCell.e.push({ e: emotion, u: this.userEmail || 'guest', t: Date.now() });
+
+      await this.saveTableData(blockId, tableData);
+      await this.updateCellEmotions(cellId);
+
+      // Queue sync + log
+      this.syncQueue.push({
+        type: 'table_update',
+        data: { blockId, tableData, userEmail: this.userEmail || 'guest', timestamp: Date.now(), synced: false }
+      });
+      await this.logInteraction('emotion_added', { blockId, rowIndex, colIndex, emotion });
+
+      if (this.isOnline) this.syncWithServer();
+    } catch (err) {
+      console.error('[addEmotion]', err);
+    }
+  }
+
+  /* ---------- Table Data Model (single source of truth) ---------- */
+  extractTableStructure(blockId) {
+    const card = document.querySelector(`[data-block-id="${blockId}"]`);
+    if (!card) return null;
+    const table = card.querySelector('.board-table');
+    if (!table) return null;
+
+    const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
+    const rows = [];
+    const dataRows = table.querySelectorAll('tbody tr, tfoot tr');
+
+    dataRows.forEach((row) => {
+      const cells = Array.from(row.querySelectorAll('td')).map((cell) => ({
+        v: this.cleanCellValue(cell.textContent.trim()),
+        e: [] // emotions
+      }));
+      rows.push({
+        t: row.classList.contains('board-table__totals') ? 'total' : 'data',
+        c: cells
+      });
+    });
+
+    return {
+      b: blockId,
+      t: card.querySelector('.board-card__header')?.textContent.trim() || blockId,
+      h: headers,
+      r: rows,
+      updated: Date.now()
+    };
+  }
+
+  async getTableData(blockId) {
+    try {
+      const store = await this.getStore('tables', 'readonly');
+      return await this.getFromStore(store, blockId);
+    } catch {
+      return null;
+    }
+  }
+
+  async saveTableData(blockId, tableData) {
+    try {
+      const store = await this.getStore('tables', 'readwrite');
+      tableData.updated = Date.now();
+      await this.putInStore(store, tableData);
+    } catch (err) {
+      console.error('[saveTableData]', err);
+    }
+  }
+
+  async updateCellEmotions(cellId) {
+    const cell = document.querySelector(`[data-cell-id="${cellId}"]`);
+    if (!cell) return;
+    const existing = cell.querySelector('.cell-emotions');
+    if (existing) existing.remove();
+
+    const entries = await this.getCellEmotionsFromTables(cellId);
+    if (entries.length === 0) return;
+
+    const container = document.createElement('div');
+    container.className = 'cell-emotions';
+
+    // group + sort by count
+    const counts = {};
+    entries.forEach(({ e, u }) => {
+      if (!counts[e]) counts[e] = { count: 0, users: [] };
+      counts[e].count++;
+      counts[e].users.push((u || '').split('@')[0] || 'guest');
+    });
+    const top = Object.entries(counts).sort((a,b)=>b[1].count - a[1].count).slice(0,3);
+    top.forEach(([emo, data]) => {
+      const span = document.createElement('span');
+      span.className = 'emotion-indicator';
+      span.textContent = data.count > 1 ? `${emo}${data.count}` : emo;
+      span.title = `${emo} (${data.count}) – ${data.users.join(', ')}`;
+      container.appendChild(span);
+    });
+    cell.appendChild(container);
+  }
+
+  async getCellEmotionsFromTables(cellId) {
+    const [blockId, rStr, cStr] = cellId.split('_');
+    const rowIndex = parseInt(rStr, 10);
+    const colIndex = parseInt(cStr, 10);
+    const tableData = await this.getTableData(blockId);
+    const row = tableData?.r?.[rowIndex];
+    const cell = row?.c?.[colIndex];
+    return (cell?.e) ? [...cell.e] : [];
+  }
+
+  async loadEmotionsFromTables() {
+    try {
+      const store = await this.getStore('tables', 'readonly');
+      const tables = await this.getAllFromStore(store);
+      for (const td of tables) {
+        await this.updateTableEmotionDisplays(td);
+      }
+    } catch (err) {
+      console.warn('[loadEmotionsFromTables]', err);
+    }
+  }
+
+  async updateTableEmotionDisplays(tableData) {
+    const blockId = tableData.b;
+    tableData.r.forEach((row, ri) => {
+      row.c.forEach((cell, ci) => {
+        if (cell.e && cell.e.length) {
+          const cellId = `${blockId}_${ri}_${ci}`;
+          this.updateCellEmotions(cellId);
+        }
+      });
+    });
+  }
+
+  async updateEmotionCount(cellId) {
+    const el = document.getElementById('emotionCount');
+    if (!el) return;
+    const entries = await this.getCellEmotionsFromTables(cellId);
+    if (entries.length === 0) {
+      el.textContent = 'No reactions yet';
+      return;
+    }
+    const counts = {};
+    entries.forEach(({ e }) => { counts[e] = (counts[e] || 0) + 1; });
+    el.textContent = Object.entries(counts).map(([emo, n]) => `${emo} ${n}`).join(' | ');
+  }
+
+  /* ---------- Logging & Sync ---------- */
+  async logInteraction(type, data = {}) {
+    try {
+      const store = await this.getStore('interactions', 'readwrite');
+      const rec = { type, userEmail: this.userEmail || 'guest', timestamp: Date.now(), data, synced: false };
+      const id = await this.addToStore(store, rec);
+      this.syncQueue.push({ type: 'interaction', data: { ...rec, id } });
+    } catch (err) {
+      console.error('[logInteraction]', err);
+    }
+  }
+
+  setupPeriodicSync() {
+    setInterval(() => {
+      if (this.isOnline && this.syncQueue.length > 0) this.syncWithServer();
+    }, 5 * 60 * 1000);
+    setInterval(() => { this.updateUserActivity(); }, 60 * 1000);
+  }
+
+  async syncWithServer() {
+    if (!this.isOnline) return;
+    try {
+      // collect all tables
+      const store = await this.getStore('tables', 'readonly');
+      const allTables = await this.getAllFromStore(store);
+      const payload = {
+        userEmail: this.userEmail || 'guest',
+        timestamp: Date.now(),
+        version: '2.0',
+        tables: Object.fromEntries(allTables.map(t => [t.b, t]))
+      };
+      const payloadSize = JSON.stringify(payload).length;
+      console.log(`[sync] payload size ${payloadSize} bytes`, payload);
+
+      const success = await this.updateServerSync(payload);
+      if (success) {
+        await this.markItemsAsSynced();
+        this.syncQueue = [];
+        console.log('[sync] success');
+      } else {
+        console.warn('[sync] server rejected payload');
+      }
+    } catch (err) {
+      console.error('[syncWithServer]', err);
+    }
+  }
+
+  async processServerUpdates() {
+    if (!this.isOnline) return;
+    try {
+      const serverTables = await this.updateServerTables(); // replace with real fetch
+      for (const blockId in serverTables) {
+        const serverTable = serverTables[blockId];
+        const local = await this.getTableData(blockId);
+        if (!local || (serverTable.updated || 0) > (local.updated || 0)) {
+          await this.saveTableData(blockId, serverTable);
+          await this.updateTableEmotionDisplays(serverTable);
+        }
+      }
+      await this.updateLastSyncTimestamp();
+    } catch (err) {
+      console.error('[processServerUpdates]', err);
+    }
+  }
+
+  async markItemsAsSynced() {
+    try {
+      const store = await this.getStore('interactions', 'readwrite');
+      for (const item of this.syncQueue) {
+        if (item.type === 'interaction') {
+          const existing = await this.getFromStore(store, item.data.id);
+          if (existing) {
+            existing.synced = true;
+            await this.putInStore(store, existing);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[markItemsAsSynced]', err);
+    }
+  }
+
+  async updateLastSyncTimestamp() {
+    try {
+      const store = await this.getStore('users', 'readwrite');
+      const user = await this.getFromStore(store, this.userEmail);
+      if (user) {
+        user.lastSync = Date.now();
+        await this.putInStore(store, user);
+      }
+    } catch (err) {
+      console.error('[updateLastSyncTimestamp]', err);
+    }
+  }
+  async getLastSyncTimestamp() {
+    try {
+      const store = await this.getStore('users', 'readonly');
+      const user = await this.getFromStore(store, this.userEmail);
+      return user?.lastSync || 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /* ---------- Utilities ---------- */
+  cleanCellValue(v) { return (v || '').replace(/\s+/g, ' ').trim(); }
+
+  // POST snapshot + interactions, avoiding preflight
+  async updateServerSync(payload) {
+    const CANDIDATES = [
+      'https://trwth.com/social.php',
+      'https://www.trwth.com/social.php' // try canonical if your site forces www
+    ];
+    const API_KEY = 'TRWTH_SOCIAL_API_KEY'; // optional: if you use a key, pass via ?k=... to avoid preflight
+
+    const body = JSON.stringify(payload);
+
+    for (const base of CANDIDATES) {
+      const url = API_KEY ? `${base}?k=${encodeURIComponent(API_KEY)}` : base;
+
+      // Abort after 12s
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 12000);
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=UTF-8' }, // simple request => no preflight
+          body,
+          credentials: 'omit',
+          signal: controller.signal,
+          redirect: 'error' // if a redirect still happens, throw so we try next candidate
+        });
+        clearTimeout(timer);
+        if (!res.ok) continue; // try next candidate
+        await res.json().catch(() => ({}));
+        return true;
+      } catch (e) {
+        clearTimeout(timer);
+        // try next candidate
+      }
+    }
+    return false;
+  }
+
+
+  // GET newer tables, avoiding preflight
+  async updateServerTables() {
+    const CANDIDATES = [
+      'https://trwth.com/social.php',
+      'https://www.trwth.com/social.php'
+    ];
+    const API_KEY = 'TRWTH_SOCIAL_API_KEY'; // optional
+    let since = 0; try { since = await this.getLastSyncTimestamp(); } catch {}
+
+    for (const base of CANDIDATES) {
+      const params = new URLSearchParams();
+      if (API_KEY) params.set('k', API_KEY);
+      if (since) params.set('since', String(since));
+      const url = params.toString() ? `${base}?${params}` : base;
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 12000);
+      try {
+        const res = await fetch(url, {
+          method: 'GET',
+          credentials: 'omit',
+          signal: controller.signal,
+          redirect: 'error'
+        });
+        clearTimeout(timer);
+        if (!res.ok) continue;
+        const { tables = {}, serverTime } = await res.json().catch(() => ({}));
+        if (serverTime) { try { await this.updateLastSyncTimestamp(serverTime); } catch {} }
+        return tables || {};
+      } catch (e) {
+        clearTimeout(timer);
+        // try next candidate
+      }
+    }
+    return {};
+  }
+
+  // IDB Helpers
+  async getFromStore(store, key) {
+    return new Promise((resolve, reject) => {
+      const req = store.get(key);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  async putInStore(store, data) {
+    return new Promise((resolve, reject) => {
+      const req = store.put(data);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  async addToStore(store, data) {
+    return new Promise((resolve, reject) => {
+      const req = store.add(data);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  async getAllFromStore(store) {
+    return new Promise((resolve, reject) => {
+      const req = store.getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => { new SocialDashboard(); });
+</script>
+
+</body>
+</html>
