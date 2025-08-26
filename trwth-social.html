@@ -46,23 +46,15 @@
     background-repeat:no-repeat;
   }
 
-  .cell-emotions {
-    position: absolute;
-    top: 2px;
-    right: 2px;
-    display: flex;
-    gap: 2px;
-    flex-wrap: wrap;
-    max-width: 60px;
-    z-index: 10;
-    pointer-events: none;
+  /* Overlapping per-user emoji badges with hover titles */
+  .cell-emotions{
+    position:absolute;top:2px;right:2px;display:flex;gap:0;flex-wrap:nowrap;max-width:120px;z-index:10;pointer-events:auto
   }
-
-  .emotion-indicator {
-    font-size: 12px;
-    opacity: 0.8;
-    text-shadow: 0 0 2px rgba(0,0,0,0.8);
+  .emotion-badge{
+    position:relative;font-size:14px;line-height:1;padding:0 2px;margin-left:-6px;
+    filter:drop-shadow(0 0 2px rgba(0,0,0,.8));cursor:default
   }
+  .emotion-badge:first-child{margin-left:0}
 
   .emotion-popup {
     position: fixed;
@@ -311,7 +303,7 @@ class SocialDashboard {
   constructor() {
     this.db = null;
     this.dbName = 'SocialDashboardDB';
-    this.dbVersion = 3; // bump version to ensure fresh, consistent stores
+    this.dbVersion = 3;
     this.userEmail = null;
     this.isOnline = navigator.onLine;
     this.emotions = ['😊', '😐', '😔', '👍', '👎', '❤️', '🔥', '💡'];
@@ -324,15 +316,24 @@ class SocialDashboard {
 
   async init() {
     try {
-      window.addEventListener('online', () => this.handleOnlineStatus(true));
+      window.addEventListener('online',  () => this.handleOnlineStatus(true));
       window.addEventListener('offline', () => this.handleOnlineStatus(false));
       this.updateOnlineIndicator();
 
       await this.initDB();
+
+      // Fire the page-load server pull immediately (non-blocking)
+      const pullOnLoad = navigator.onLine ? this.syncOnLoad() : Promise.resolve();
+
+      // Resolve user in parallel (don’t block the network pull)
       await this.checkUserEmail();
+
       this.setupCellInteractions();
+
+      // Wait for the page-load pull (if still in flight), then paint IDB
+      await pullOnLoad;
       await this.loadEmotionsFromTables();
-      this.setupPeriodicSync();
+
       await this.logInteraction('page_visit');
       this.initialized = true;
     } catch (err) {
@@ -340,29 +341,20 @@ class SocialDashboard {
     }
   }
 
-  /* ---------- IndexedDB Bootstrapping ---------- */
+  /* ---------- IndexedDB ---------- */
   async initDB() {
-    if (this.db) {
-      try {
-        this.db.close();
-      } catch {}
-      this.db = null;
-    }
+    if (this.db) { try { this.db.close(); } catch {} this.db = null; }
 
     this.db = await new Promise((resolve, reject) => {
       const request = indexedDB.open(this.dbName, this.dbVersion);
-
       request.onerror = () => reject(request.error);
       request.onsuccess = () => {
         const db = request.result;
-        db.onversionchange = () => {
-          try { db.close(); } catch {}
-        };
+        db.onversionchange = () => { try { db.close(); } catch {} };
         resolve(db);
       };
       request.onupgradeneeded = (event) => {
         const db = event.target.result;
-        // Create/ensure stores
         if (!db.objectStoreNames.contains('users')) {
           const userStore = db.createObjectStore('users', { keyPath: 'email' });
           userStore.createIndex('lastActive', 'lastActive');
@@ -377,7 +369,6 @@ class SocialDashboard {
           interactionStore.createIndex('timestamp', 'timestamp');
           interactionStore.createIndex('synced', 'synced');
         }
-        // Drop legacy store if present
         if (db.objectStoreNames.contains('emotions')) {
           db.deleteObjectStore('emotions');
         }
@@ -386,7 +377,6 @@ class SocialDashboard {
   }
 
   async getStore(storeName, mode = 'readonly') {
-    // Ensure DB and store exist even if user cleared storage mid-session
     if (!this.db || !this.db.objectStoreNames.contains(storeName)) {
       await this.initDB();
     }
@@ -396,7 +386,7 @@ class SocialDashboard {
     return this.db.transaction([storeName], mode).objectStore(storeName);
   }
 
-  /* ---------- User Handling ---------- */
+  /* ---------- User ---------- */
   async checkUserEmail() {
     try {
       const store = await this.getStore('users', 'readonly');
@@ -452,30 +442,19 @@ class SocialDashboard {
       submitBtn.addEventListener('click', handleSubmit);
       emailInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') handleSubmit();
-        if (e.key === 'Escape') {
-          // Optional: allow dismiss (read-only mode)
-          document.body.removeChild(modal);
-          resolve();
-        }
+        if (e.key === 'Escape') { document.body.removeChild(modal); resolve(); }
       });
       emailInput.focus();
     });
   }
 
-  validateEmail(email) {
-    const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    return re.test(email);
-  }
+  validateEmail(email) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email); }
 
   async saveUser(email) {
     try {
       const store = await this.getStore('users', 'readwrite');
-      await this.putInStore(store, {
-        email, lastActive: Date.now(), createdAt: Date.now(), lastSync: 0
-      });
-    } catch (error) {
-      console.error('[saveUser]', error);
-    }
+      await this.putInStore(store, { email, lastActive: Date.now(), createdAt: Date.now(), lastSync: 0 });
+    } catch (error) { console.error('[saveUser]', error); }
   }
 
   async updateUserActivity() {
@@ -484,16 +463,9 @@ class SocialDashboard {
       const store = await this.getStore('users', 'readwrite');
       const user = await this.getFromStore(store, this.userEmail);
       const now = Date.now();
-      if (user) {
-        user.lastActive = now;
-        await this.putInStore(store, user);
-      } else {
-        // Recreate user if cleared
-        await this.putInStore(store, { email: this.userEmail, lastActive: now, createdAt: now, lastSync: 0 });
-      }
-    } catch (error) {
-      console.error('[updateUserActivity]', error);
-    }
+      if (user) { user.lastActive = now; await this.putInStore(store, user); }
+      else { await this.putInStore(store, { email: this.userEmail, lastActive: now, createdAt: now, lastSync: 0 }); }
+    } catch (error) { console.error('[updateUserActivity]', error); }
   }
 
   updateUserDisplay() {
@@ -505,10 +477,6 @@ class SocialDashboard {
   handleOnlineStatus(online) {
     this.isOnline = online;
     this.updateOnlineIndicator();
-    if (online) {
-      this.syncWithServer();
-      this.processServerUpdates();
-    }
   }
   updateOnlineIndicator() {
     const ind = document.getElementById('onlineIndicator');
@@ -516,10 +484,9 @@ class SocialDashboard {
     ind.title = this.isOnline ? 'Online' : 'Offline';
   }
 
-  /* ---------- Table & Cell Interactions ---------- */
+  /* ---------- Cell interactions ---------- */
   setupCellInteractions() {
     document.querySelectorAll('.board-table tbody td').forEach((cell) => {
-      const table = cell.closest('table');
       const card = cell.closest('[data-block-id]');
       const blockId = card ? card.getAttribute('data-block-id') : '';
       const row = cell.parentElement;
@@ -534,13 +501,9 @@ class SocialDashboard {
     });
 
     document.addEventListener('click', (e) => {
-      if (this.currentPopup && !this.currentPopup.contains(e.target)) {
-        this.closeEmotionPopup();
-      }
+      if (this.currentPopup && !this.currentPopup.contains(e.target)) this.closeEmotionPopup();
     });
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') this.closeEmotionPopup();
-    });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') this.closeEmotionPopup(); });
   }
 
   showEmotionPopup(cell, cellId) {
@@ -572,12 +535,7 @@ class SocialDashboard {
     this.currentPopup = popup;
     this.updateEmotionCount(cellId);
   }
-  closeEmotionPopup() {
-    if (this.currentPopup) {
-      this.currentPopup.remove();
-      this.currentPopup = null;
-    }
-  }
+  closeEmotionPopup() { if (this.currentPopup) { this.currentPopup.remove(); this.currentPopup = null; } }
 
   async addEmotion(cellId, emotion) {
     try {
@@ -586,41 +544,32 @@ class SocialDashboard {
       const colIndex = parseInt(cStr, 10);
 
       let tableData = await this.getTableData(blockId);
-      if (!tableData) {
-        tableData = this.extractTableStructure(blockId);
-      }
+      if (!tableData) tableData = this.extractTableStructure(blockId);
 
-      // Guard against DOM/data drift
-      if (!tableData.r[rowIndex]) {
-        tableData = this.extractTableStructure(blockId);
-      }
+      if (!tableData.r[rowIndex]) tableData = this.extractTableStructure(blockId);
       if (!tableData || !tableData.r[rowIndex]) return;
       const row = tableData.r[rowIndex];
       if (!row.c[colIndex]) return;
       const targetCell = row.c[colIndex];
 
-      // Remove previous emotion by this user for this cell
+      // allow one reaction per user per cell (replace)
       targetCell.e = (targetCell.e || []).filter(entry => entry.u !== this.userEmail);
-      // Push new emotion
       targetCell.e.push({ e: emotion, u: this.userEmail || 'guest', t: Date.now() });
 
       await this.saveTableData(blockId, tableData);
       await this.updateCellEmotions(cellId);
 
-      // Queue sync + log
-      this.syncQueue.push({
-        type: 'table_update',
-        data: { blockId, tableData, userEmail: this.userEmail || 'guest', timestamp: Date.now(), synced: false }
-      });
       await this.logInteraction('emotion_added', { blockId, rowIndex, colIndex, emotion });
 
-      if (this.isOnline) this.syncWithServer();
-    } catch (err) {
-      console.error('[addEmotion]', err);
-    }
+      // --- Sync ONLY on user action (push) then pull deltas to reconcile ---
+      if (this.isOnline) {
+        await this.syncWithServer();          // POST snapshot
+        await this.pullAndMerge(false);       // GET deltas since lastSync
+      }
+    } catch (err) { console.error('[addEmotion]', err); }
   }
 
-  /* ---------- Table Data Model (single source of truth) ---------- */
+  /* ---------- Table model ---------- */
   extractTableStructure(blockId) {
     const card = document.querySelector(`[data-block-id="${blockId}"]`);
     if (!card) return null;
@@ -634,42 +583,24 @@ class SocialDashboard {
     dataRows.forEach((row) => {
       const cells = Array.from(row.querySelectorAll('td')).map((cell) => ({
         v: this.cleanCellValue(cell.textContent.trim()),
-        e: [] // emotions
+        e: []
       }));
-      rows.push({
-        t: row.classList.contains('board-table__totals') ? 'total' : 'data',
-        c: cells
-      });
+      rows.push({ t: row.classList.contains('board-table__totals') ? 'total' : 'data', c: cells });
     });
 
-    return {
-      b: blockId,
-      t: card.querySelector('.board-card__header')?.textContent.trim() || blockId,
-      h: headers,
-      r: rows,
-      updated: Date.now()
-    };
+    return { b: blockId, t: card.querySelector('.board-card__header')?.textContent.trim() || blockId, h: headers, r: rows, updated: Date.now() };
   }
 
   async getTableData(blockId) {
-    try {
-      const store = await this.getStore('tables', 'readonly');
-      return await this.getFromStore(store, blockId);
-    } catch {
-      return null;
-    }
+    try { const store = await this.getStore('tables', 'readonly'); return await this.getFromStore(store, blockId); }
+    catch { return null; }
   }
-
   async saveTableData(blockId, tableData) {
-    try {
-      const store = await this.getStore('tables', 'readwrite');
-      tableData.updated = Date.now();
-      await this.putInStore(store, tableData);
-    } catch (err) {
-      console.error('[saveTableData]', err);
-    }
+    try { const store = await this.getStore('tables', 'readwrite'); tableData.updated = Date.now(); await this.putInStore(store, tableData); }
+    catch (err) { console.error('[saveTableData]', err); }
   }
 
+  /* ---------- Overlapping per-user badges ---------- */
   async updateCellEmotions(cellId) {
     const cell = document.querySelector(`[data-cell-id="${cellId}"]`);
     if (!cell) return;
@@ -677,26 +608,26 @@ class SocialDashboard {
     if (existing) existing.remove();
 
     const entries = await this.getCellEmotionsFromTables(cellId);
-    if (entries.length === 0) return;
+    if (!entries.length) return;
+
+    entries.sort((a,b) => (a.t||0) - (b.t||0));
+    const MAX = 8;
+    const subset = entries.slice(-MAX);
 
     const container = document.createElement('div');
     container.className = 'cell-emotions';
 
-    // group + sort by count
-    const counts = {};
-    entries.forEach(({ e, u }) => {
-      if (!counts[e]) counts[e] = { count: 0, users: [] };
-      counts[e].count++;
-      counts[e].users.push((u || '').split('@')[0] || 'guest');
+    subset.forEach((rec, idx) => {
+      const badge = document.createElement('span');
+      badge.className = 'emotion-badge';
+      badge.textContent = rec.e;
+      const email = rec.u || 'guest';
+      const when  = rec.t ? new Date(rec.t).toLocaleString() : '';
+      badge.title = `${rec.e} — ${email}${when ? ` • ${when}` : ''}`;
+      badge.style.zIndex = String(100 + idx);
+      container.appendChild(badge);
     });
-    const top = Object.entries(counts).sort((a,b)=>b[1].count - a[1].count).slice(0,3);
-    top.forEach(([emo, data]) => {
-      const span = document.createElement('span');
-      span.className = 'emotion-indicator';
-      span.textContent = data.count > 1 ? `${emo}${data.count}` : emo;
-      span.title = `${emo} (${data.count}) – ${data.users.join(', ')}`;
-      container.appendChild(span);
-    });
+
     cell.appendChild(container);
   }
 
@@ -714,21 +645,22 @@ class SocialDashboard {
     try {
       const store = await this.getStore('tables', 'readonly');
       const tables = await this.getAllFromStore(store);
-      for (const td of tables) {
-        await this.updateTableEmotionDisplays(td);
-      }
-    } catch (err) {
-      console.warn('[loadEmotionsFromTables]', err);
-    }
+      for (const td of tables) await this.updateTableEmotionDisplays(td);
+    } catch (err) { console.warn('[loadEmotionsFromTables]', err); }
   }
 
   async updateTableEmotionDisplays(tableData) {
     const blockId = tableData.b;
     tableData.r.forEach((row, ri) => {
       row.c.forEach((cell, ci) => {
-        if (cell.e && cell.e.length) {
-          const cellId = `${blockId}_${ri}_${ci}`;
-          this.updateCellEmotions(cellId);
+        const cellId = `${blockId}_${ri}_${ci}`;
+        if (cell.e && cell.e.length) this.updateCellEmotions(cellId);
+        else {
+          const cellEl = document.querySelector(`[data-cell-id="${cellId}"]`);
+          if (cellEl) {
+            const existing = cellEl.querySelector('.cell-emotions');
+            if (existing) existing.remove();
+          }
         }
       });
     });
@@ -738,38 +670,106 @@ class SocialDashboard {
     const el = document.getElementById('emotionCount');
     if (!el) return;
     const entries = await this.getCellEmotionsFromTables(cellId);
-    if (entries.length === 0) {
-      el.textContent = 'No reactions yet';
-      return;
-    }
-    const counts = {};
-    entries.forEach(({ e }) => { counts[e] = (counts[e] || 0) + 1; });
-    el.textContent = Object.entries(counts).map(([emo, n]) => `${emo} ${n}`).join(' | ');
+    if (!entries.length) { el.textContent = 'No reactions yet'; return; }
+    const byEmoji = {};
+    entries.forEach(({ e }) => { byEmoji[e] = (byEmoji[e] || 0) + 1; });
+    el.textContent = Object.entries(byEmoji).map(([emo, n]) => `${emo} ${n}`).join(' | ');
   }
 
-  /* ---------- Logging & Sync ---------- */
+  /* ---------- Sync rules: page-load & on-change only ---------- */
+
+  // Page-load: force full snapshot pull (ignore watermark), merge, paint.
+  async syncOnLoad() {
+    try {
+      const serverTables = await this.updateServerTables(true);
+      if (!serverTables || Object.keys(serverTables).length === 0) return;
+
+      for (const [blockId, serverT] of Object.entries(serverTables)) {
+        const localT = await this.getTableData(blockId);
+        const merged = this.mergeTables(localT, serverT);
+        await this.saveTableData(blockId, merged);
+        await this.updateTableEmotionDisplays(merged);
+      }
+      await this.updateLastSyncTimestamp(Date.now());
+      console.log('[syncOnLoad] merged server tables');
+    } catch (err) {
+      console.warn('[syncOnLoad]', err);
+    }
+  }
+
+  // After user changes a reaction: pull only what’s new since lastSync.
+  async pullAndMerge(full = false) {
+    try {
+      const serverTables = await this.updateServerTables(full);
+      if (!serverTables || Object.keys(serverTables).length === 0) return;
+
+      for (const [blockId, serverT] of Object.entries(serverTables)) {
+        const localT = await this.getTableData(blockId);
+        const merged = this.mergeTables(localT, serverT);
+        await this.saveTableData(blockId, merged);
+        await this.updateTableEmotionDisplays(merged);
+      }
+      await this.updateLastSyncTimestamp(Date.now());
+    } catch (err) {
+      console.warn('[pullAndMerge]', err);
+    }
+  }
+
+  // Merge server + local. Reactions are {e,u,t}; latest per user wins.
+  mergeTables(localT, serverT) {
+    if (!localT) return serverT;
+
+    const out = { ...localT };
+    out.t = serverT.t || localT.t;
+    out.h = serverT.h || localT.h;
+    out.updated = Math.max(localT.updated || 0, serverT.updated || 0);
+
+    const lr = localT.r || [], sr = serverT.r || [];
+    const maxRows = Math.max(lr.length, sr.length);
+    out.r = [];
+
+    for (let ri = 0; ri < maxRows; ri++) {
+      const lrow = lr[ri] || { t: 'data', c: [] };
+      const srow = sr[ri] || { t: lrow.t,   c: [] };
+      const maxCols = Math.max((lrow.c||[]).length, (srow.c||[]).length);
+      const row = { t: lrow.t || srow.t || 'data', c: [] };
+
+      for (let ci = 0; ci < maxCols; ci++) {
+        const lc = (lrow.c || [])[ci] || { v: '', e: [] };
+        const sc = (srow.c || [])[ci] || { v: lc.v, e: [] };
+        const v = sc.v ?? lc.v;
+
+        const byUser = new Map();
+        const add = (rec) => {
+          if (!rec || !rec.u) return;
+          const cur = byUser.get(rec.u);
+          if (!cur || (rec.t || 0) > (cur.t || 0)) byUser.set(rec.u, rec);
+        };
+        (lc.e || []).forEach(add);
+        (sc.e || []).forEach(add);
+
+        const e = Array.from(byUser.values()).sort((a,b) => (a.t||0) - (b.t||0));
+        row.c.push({ v, e });
+      }
+      out.r.push(row);
+    }
+
+    return out;
+  }
+
+  /* ---------- Logging & one-shot push ---------- */
   async logInteraction(type, data = {}) {
     try {
       const store = await this.getStore('interactions', 'readwrite');
       const rec = { type, userEmail: this.userEmail || 'guest', timestamp: Date.now(), data, synced: false };
       const id = await this.addToStore(store, rec);
       this.syncQueue.push({ type: 'interaction', data: { ...rec, id } });
-    } catch (err) {
-      console.error('[logInteraction]', err);
-    }
-  }
-
-  setupPeriodicSync() {
-    setInterval(() => {
-      if (this.isOnline && this.syncQueue.length > 0) this.syncWithServer();
-    }, 5 * 60 * 1000);
-    setInterval(() => { this.updateUserActivity(); }, 60 * 1000);
+    } catch (err) { console.error('[logInteraction]', err); }
   }
 
   async syncWithServer() {
     if (!this.isOnline) return;
     try {
-      // collect all tables
       const store = await this.getStore('tables', 'readonly');
       const allTables = await this.getAllFromStore(store);
       const payload = {
@@ -778,38 +778,12 @@ class SocialDashboard {
         version: '2.0',
         tables: Object.fromEntries(allTables.map(t => [t.b, t]))
       };
-      const payloadSize = JSON.stringify(payload).length;
-      console.log(`[sync] payload size ${payloadSize} bytes`, payload);
-
       const success = await this.updateServerSync(payload);
       if (success) {
         await this.markItemsAsSynced();
         this.syncQueue = [];
-        console.log('[sync] success');
-      } else {
-        console.warn('[sync] server rejected payload');
       }
-    } catch (err) {
-      console.error('[syncWithServer]', err);
-    }
-  }
-
-  async processServerUpdates() {
-    if (!this.isOnline) return;
-    try {
-      const serverTables = await this.updateServerTables(); // replace with real fetch
-      for (const blockId in serverTables) {
-        const serverTable = serverTables[blockId];
-        const local = await this.getTableData(blockId);
-        if (!local || (serverTable.updated || 0) > (local.updated || 0)) {
-          await this.saveTableData(blockId, serverTable);
-          await this.updateTableEmotionDisplays(serverTable);
-        }
-      }
-      await this.updateLastSyncTimestamp();
-    } catch (err) {
-      console.error('[processServerUpdates]', err);
-    }
+    } catch (err) { console.error('[syncWithServer]', err); }
   }
 
   async markItemsAsSynced() {
@@ -818,145 +792,103 @@ class SocialDashboard {
       for (const item of this.syncQueue) {
         if (item.type === 'interaction') {
           const existing = await this.getFromStore(store, item.data.id);
-          if (existing) {
-            existing.synced = true;
-            await this.putInStore(store, existing);
-          }
+          if (existing) { existing.synced = true; await this.putInStore(store, existing); }
         }
       }
-    } catch (err) {
-      console.error('[markItemsAsSynced]', err);
-    }
+    } catch (err) { console.error('[markItemsAsSynced]', err); }
   }
 
-  async updateLastSyncTimestamp() {
+  async updateLastSyncTimestamp(ts) {
     try {
       const store = await this.getStore('users', 'readwrite');
       const user = await this.getFromStore(store, this.userEmail);
-      if (user) {
-        user.lastSync = Date.now();
-        await this.putInStore(store, user);
-      }
-    } catch (err) {
-      console.error('[updateLastSyncTimestamp]', err);
-    }
+      if (user) { user.lastSync = ts || Date.now(); await this.putInStore(store, user); }
+    } catch (err) { console.error('[updateLastSyncTimestamp]', err); }
   }
   async getLastSyncTimestamp() {
-    try {
-      const store = await this.getStore('users', 'readonly');
-      const user = await this.getFromStore(store, this.userEmail);
-      return user?.lastSync || 0;
-    } catch {
-      return 0;
-    }
+    try { const store = await this.getStore('users', 'readonly'); const user = await this.getFromStore(store, this.userEmail); return user?.lastSync || 0; }
+    catch { return 0; }
   }
 
-  /* ---------- Utilities ---------- */
+  /* ---------- Utilities & server I/O ---------- */
   cleanCellValue(v) { return (v || '').replace(/\s+/g, ' ').trim(); }
 
-  // POST snapshot + interactions, avoiding preflight
+  // POST snapshot (text/plain to avoid preflight)
   async updateServerSync(payload) {
     const CANDIDATES = [
       'https://trwth.com/social.php',
-      'https://www.trwth.com/social.php' // try canonical if your site forces www
+      'https://www.trwth.com/social.php'
     ];
-    const API_KEY = 'TRWTH_SOCIAL_API_KEY'; // optional: if you use a key, pass via ?k=... to avoid preflight
-
+    const API_KEY = ''; // set to your real key or leave blank if auth disabled
     const body = JSON.stringify(payload);
 
     for (const base of CANDIDATES) {
       const url = API_KEY ? `${base}?k=${encodeURIComponent(API_KEY)}` : base;
-
-      // Abort after 12s
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 12000);
       try {
         const res = await fetch(url, {
           method: 'POST',
-          headers: { 'Content-Type': 'text/plain;charset=UTF-8' }, // simple request => no preflight
+          headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
           body,
-          credentials: 'omit',
-          signal: controller.signal,
-          redirect: 'error' // if a redirect still happens, throw so we try next candidate
-        });
-        clearTimeout(timer);
-        if (!res.ok) continue; // try next candidate
-        await res.json().catch(() => ({}));
-        return true;
-      } catch (e) {
-        clearTimeout(timer);
-        // try next candidate
-      }
-    }
-    return false;
-  }
-
-
-  // GET newer tables, avoiding preflight
-  async updateServerTables() {
-    const CANDIDATES = [
-      'https://trwth.com/social.php',
-      'https://www.trwth.com/social.php'
-    ];
-    const API_KEY = 'TRWTH_SOCIAL_API_KEY'; // optional
-    let since = 0; try { since = await this.getLastSyncTimestamp(); } catch {}
-
-    for (const base of CANDIDATES) {
-      const params = new URLSearchParams();
-      if (API_KEY) params.set('k', API_KEY);
-      if (since) params.set('since', String(since));
-      const url = params.toString() ? `${base}?${params}` : base;
-
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 12000);
-      try {
-        const res = await fetch(url, {
-          method: 'GET',
           credentials: 'omit',
           signal: controller.signal,
           redirect: 'error'
         });
         clearTimeout(timer);
         if (!res.ok) continue;
+        await res.json().catch(() => ({}));
+        return true;
+      } catch { clearTimeout(timer); }
+    }
+    return false;
+  }
+
+  // GET tables; when full==true, ignore watermark for complete snapshot
+  async updateServerTables(full = false) {
+    const CANDIDATES = [
+      'https://trwth.com/social.php',
+      'https://www.trwth.com/social.php'
+    ];
+    const API_KEY = ''; // set to your real key or leave blank if auth disabled
+
+    let since = 0;
+    if (!full) {
+      try { since = await this.getLastSyncTimestamp(); } catch {}
+    }
+
+    for (const base of CANDIDATES) {
+      const params = new URLSearchParams();
+      if (API_KEY) params.set('k', API_KEY);
+      if (!full && since) params.set('since', String(since));
+      const url = params.toString() ? `${base}?${params}` : base;
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 12000);
+      try {
+        const res = await fetch(url, { method: 'GET', credentials: 'omit', signal: controller.signal, redirect: 'error' });
+        clearTimeout(timer);
+        if (!res.ok) continue;
         const { tables = {}, serverTime } = await res.json().catch(() => ({}));
         if (serverTime) { try { await this.updateLastSyncTimestamp(serverTime); } catch {} }
         return tables || {};
-      } catch (e) {
-        clearTimeout(timer);
-        // try next candidate
-      }
+      } catch { clearTimeout(timer); }
     }
     return {};
   }
 
-  // IDB Helpers
+  // IDB helpers
   async getFromStore(store, key) {
-    return new Promise((resolve, reject) => {
-      const req = store.get(key);
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-    });
+    return new Promise((resolve, reject) => { const req = store.get(key); req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error); });
   }
   async putInStore(store, data) {
-    return new Promise((resolve, reject) => {
-      const req = store.put(data);
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-    });
+    return new Promise((resolve, reject) => { const req = store.put(data); req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error); });
   }
   async addToStore(store, data) {
-    return new Promise((resolve, reject) => {
-      const req = store.add(data);
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-    });
+    return new Promise((resolve, reject) => { const req = store.add(data); req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error); });
   }
   async getAllFromStore(store) {
-    return new Promise((resolve, reject) => {
-      const req = store.getAll();
-      req.onsuccess = () => resolve(req.result || []);
-      req.onerror = () => reject(req.error);
-    });
+    return new Promise((resolve, reject) => { const req = store.getAll(); req.onsuccess = () => resolve(req.result || []); req.onerror = () => reject(req.error); });
   }
 }
 
