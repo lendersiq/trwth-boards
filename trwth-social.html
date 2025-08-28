@@ -477,7 +477,13 @@ class SocialDashboard {
   handleOnlineStatus(online) {
     this.isOnline = online;
     this.updateOnlineIndicator();
+    if (online) {
+      // no periodic syncs—just flush any queued table pushes immediately
+      this.flushPendingPushes().catch(err => console.warn('[flushPendingPushes]', err));
+    }
   }
+
+
   updateOnlineIndicator() {
     const ind = document.getElementById('onlineIndicator');
     ind.className = `online-indicator ${this.isOnline ? 'online' : 'offline'}`;
@@ -537,6 +543,108 @@ class SocialDashboard {
   }
   closeEmotionPopup() { if (this.currentPopup) { this.currentPopup.remove(); this.currentPopup = null; } }
 
+  async pushTable(blockId) {
+    const table = await this.getTableData(blockId);
+    if (!table) return false;
+
+    const payload = {
+      userEmail: this.userEmail || 'guest',
+      timestamp: Date.now(),
+      version: '2.0',
+      tables: { [blockId]: table } // ONLY this table
+    };
+
+    const CANDIDATES = [
+      'https://trwth.com/social.php',
+      'https://www.trwth.com/social.php'
+    ];
+    const API_KEY = 'TRWTH_SOCIAL_API_KEY'; // set real key or '' if disabled
+    const body = JSON.stringify(payload);
+
+    for (const base of CANDIDATES) {
+      const url = API_KEY ? `${base}?k=${encodeURIComponent(API_KEY)}` : base;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 12000);
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=UTF-8' }, // no-preflight
+          body,
+          credentials: 'omit',
+          signal: controller.signal,
+          redirect: 'error'
+        });
+        clearTimeout(timer);
+        if (!res.ok) continue;
+        await res.json().catch(()=> ({}));
+        return true;
+      } catch {
+        clearTimeout(timer);
+      }
+    }
+    return false;
+  }
+
+  // Push ONE table, then pull emotes for that table to reconcile
+  async pushTableAndPull(blockId) {
+    const pushed = await this.pushTable(blockId);
+    if (!pushed) return false;
+
+    const info = await this.fetchEmotesForBlock(blockId);
+    if (info && info.emotes) {
+      const local = await this.getTableData(blockId);
+      const merged = this.mergeEmotes(local, info.emotes);
+      await this.saveTableData(blockId, merged);
+      await this.updateTableEmotionDisplays(merged);
+    }
+    return true;
+  }
+
+  // Record a pending table push (dedupe by blockId + most recent)
+  async enqueuePendingPush(blockId) {
+    try {
+      const store = await this.getStore('interactions', 'readwrite');
+      const rec = {
+        type: 'pending_push',
+        userEmail: this.userEmail || 'guest',
+        timestamp: Date.now(),
+        data: { blockId },
+        synced: false
+      };
+      await this.addToStore(store, rec);
+    } catch (err) {
+      console.warn('[enqueuePendingPush]', err);
+    }
+  }
+
+  // Flush all pending pushes once we're online (event-driven)
+  async flushPendingPushes() {
+    try {
+      const store = await this.getStore('interactions', 'readwrite');
+      const all = await this.getAllFromStore(store);
+      const pendings = all.filter(r => r.type === 'pending_push' && !r.synced);
+
+      // De-dupe by blockId (keep the latest)
+      const latestByBlock = new Map();
+      for (const r of pendings) {
+        const bid = r.data?.blockId;
+        if (!bid) continue;
+        const cur = latestByBlock.get(bid);
+        if (!cur || r.timestamp > cur.timestamp) latestByBlock.set(bid, r);
+      }
+
+      for (const r of latestByBlock.values()) {
+        const ok = await this.pushTableAndPull(r.data.blockId);
+        if (ok) {
+          r.synced = true;
+          await this.putInStore(store, r);
+        }
+      }
+    } catch (err) {
+      console.warn('[flushPendingPushes]', err);
+    }
+  }
+
   async addEmotion(cellId, emotion) {
     try {
       const [blockId, rStr, cStr] = cellId.split('_');
@@ -561,11 +669,18 @@ class SocialDashboard {
 
       await this.logInteraction('emotion_added', { blockId, rowIndex, colIndex, emotion });
 
-      // --- Sync ONLY on user action (push) then pull deltas to reconcile ---
+      // --- Sync ONLY the changed table (no periodic syncs) ---
       if (this.isOnline) {
-        await this.syncWithServer();          // POST snapshot
-        await this.pullAndMerge(false);       // GET deltas since lastSync
+        const ok = await this.pushTableAndPull(blockId);
+        if (!ok) {
+          // Queue it to push as soon as we're back online (event-driven, not periodic)
+          await this.enqueuePendingPush(blockId);
+        }
+      } else {
+        // offline: queue for the next online event
+        await this.enqueuePendingPush(blockId);
       }
+
     } catch (err) { console.error('[addEmotion]', err); }
   }
 
@@ -676,22 +791,79 @@ class SocialDashboard {
     el.textContent = Object.entries(byEmoji).map(([emo, n]) => `${emo} ${n}`).join(' | ');
   }
 
-  /* ---------- Sync rules: page-load & on-change only ---------- */
+  async fetchEmotesForBlock(blockId) {
+    const CANDIDATES = [
+      'https://trwth.com/social.php',
+      'https://www.trwth.com/social.php'
+    ];
+    const API_KEY = 'TRWTH_SOCIAL_API_KEY'; // set real key or '' if auth disabled
 
-  // Page-load: force full snapshot pull (ignore watermark), merge, paint.
+    for (const base of CANDIDATES) {
+      const params = new URLSearchParams({ block: blockId, only: 'emotes' });
+      if (API_KEY) params.set('k', API_KEY);
+      const url = `${base}?${params}`;
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 12000);
+      try {
+        const res = await fetch(url, { method: 'GET', credentials: 'omit', signal: controller.signal, redirect: 'error' });
+        clearTimeout(timer);
+        if (!res.ok) continue;
+        const data = await res.json().catch(() => ({}));
+        if (!data || data.block !== blockId) continue;
+        return data.emotes || null; // [[{e:[...]},...], ...]
+      } catch {
+        clearTimeout(timer);
+      }
+    }
+    return null;
+  }
+
+  // Update only per-cell reactions; preserve cell values
+  mergeEmotes(localTable, emotesGrid /* rows: each cell like {e:[...]} */) {
+    if (!localTable) return null;
+    const out = { ...localTable };
+    const lr = out.r || [];
+    for (let ri = 0; ri < Math.max(lr.length, emotesGrid.length); ri++) {
+      const row = lr[ri] || { t: 'data', c: [] };
+      const erow = emotesGrid[ri] || [];
+      const cols = Math.max(row.c.length, erow.length);
+      const newCells = [];
+      for (let ci = 0; ci < cols; ci++) {
+        const cell = row.c[ci] || { v: '', e: [] };
+        const eCell = erow[ci] || { e: [] };
+        const byUser = new Map();
+        const add = (rec) => {
+          if (!rec || !rec.u) return;
+          const cur = byUser.get(rec.u);
+          if (!cur || (rec.t || 0) > (cur.t || 0)) byUser.set(rec.u, rec);
+        };
+        (cell.e || []).forEach(add);
+        (eCell.e || []).forEach(add);
+        const e = Array.from(byUser.values()).sort((a,b)=> (a.t||0)-(b.t||0));
+        newCells.push({ v: cell.v, e });
+      }
+      lr[ri] = { t: row.t || 'data', c: newCells };
+    }
+    out.r = lr;
+    out.updated = Date.now();
+    return out;
+  }
+
+  // Page-load: pull emotes per table (tiny payload), merge into IDB, paint
   async syncOnLoad() {
     try {
-      const serverTables = await this.updateServerTables(true);
-      if (!serverTables || Object.keys(serverTables).length === 0) return;
-
-      for (const [blockId, serverT] of Object.entries(serverTables)) {
-        const localT = await this.getTableData(blockId);
-        const merged = this.mergeTables(localT, serverT);
+      const blocks = this.getAllBlockIds();
+      for (const blockId of blocks) {
+        const emotes = await this.fetchEmotesForBlock(blockId); // GET ?block=<id>&only=emotes
+        if (!emotes) continue;
+        const localT = await this.getTableData(blockId) || this.extractTableStructure(blockId);
+        const merged = this.mergeEmotes(localT, emotes);
         await this.saveTableData(blockId, merged);
         await this.updateTableEmotionDisplays(merged);
       }
       await this.updateLastSyncTimestamp(Date.now());
-      console.log('[syncOnLoad] merged server tables');
+      console.log('[syncOnLoad] merged emotes for', blocks.length, 'tables');
     } catch (err) {
       console.warn('[syncOnLoad]', err);
     }
@@ -765,25 +937,6 @@ class SocialDashboard {
       const id = await this.addToStore(store, rec);
       this.syncQueue.push({ type: 'interaction', data: { ...rec, id } });
     } catch (err) { console.error('[logInteraction]', err); }
-  }
-
-  async syncWithServer() {
-    if (!this.isOnline) return;
-    try {
-      const store = await this.getStore('tables', 'readonly');
-      const allTables = await this.getAllFromStore(store);
-      const payload = {
-        userEmail: this.userEmail || 'guest',
-        timestamp: Date.now(),
-        version: '2.0',
-        tables: Object.fromEntries(allTables.map(t => [t.b, t]))
-      };
-      const success = await this.updateServerSync(payload);
-      if (success) {
-        await this.markItemsAsSynced();
-        this.syncQueue = [];
-      }
-    } catch (err) { console.error('[syncWithServer]', err); }
   }
 
   async markItemsAsSynced() {
@@ -890,6 +1043,12 @@ class SocialDashboard {
   async getAllFromStore(store) {
     return new Promise((resolve, reject) => { const req = store.getAll(); req.onsuccess = () => resolve(req.result || []); req.onerror = () => reject(req.error); });
   }
+  getAllBlockIds() {
+  return Array.from(document.querySelectorAll('[data-block-id]'))
+    .map(el => el.getAttribute('data-block-id'))
+    .filter(Boolean);
+}
+
 }
 
 document.addEventListener('DOMContentLoaded', () => { new SocialDashboard(); });
