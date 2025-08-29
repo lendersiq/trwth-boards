@@ -2379,6 +2379,38 @@
       /* keep totals/footer unchanged */
       .board-table tfoot .bar-wrap,
       .board-table .board-table__totals .bar-wrap{display:contents}
+      .user-status {
+        position: fixed;
+        top: 10px;
+        right: 10px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 8px 12px;
+        font-size: 12px;
+        color: var(--fg-muted);
+        z-index: 100;
+      }
+      .online-indicator {
+        display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;
+      }
+      .online-indicator.online { background:#66BB6A; }
+      .online-indicator.offline { background:#D32F2F; }
+      .error-message {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: var(--panel);
+        border: 1px solid var(--bar-neg);
+        border-radius: var(--radius);
+        padding: 20px;
+        font-size: 16px;
+        color: var(--fg);
+        text-align: center;
+        box-shadow: var(--shadow);
+        z-index: 1000;
+      }
       `;
 
       // favicon (same as live page)
@@ -2394,7 +2426,12 @@
     <link rel="icon" type="image/svg+xml" href="${faviconHref}"/>
     <style>${STYLE}</style>
     </head>
+    <script src="engage.js" defer></script>
     <body>
+    <div class="user-status" aria-live="polite">
+      <span class="online-indicator" id="onlineIndicator" title="Connectivity status"></span>
+      <span id="userId">Checking user...</span>
+    </div>
     ${container.outerHTML}
     </body>
     </html>`;
