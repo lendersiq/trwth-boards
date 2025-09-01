@@ -22,7 +22,7 @@ function showError(message) {
   errorDiv.className = 'error-message';
   errorDiv.textContent = message;
   document.body.appendChild(errorDiv);
-  document.getElementById('boardGrid').style.display = 'none';
+  document.getElementById('board-grid').style.display = 'none';
   document.getElementById('userId').textContent = 'Access Denied';
   document.getElementById('onlineIndicator').className = 'online-indicator offline';
 }
