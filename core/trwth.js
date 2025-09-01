@@ -2299,6 +2299,7 @@
       // Clone and sanitize cards (remove actions, resizers, unwrap header-map buttons, drop <h2>)
       const container = document.createElement("div");
       container.className = "board-grid";
+      container.id = "board-grid";
       container.style.setProperty("--cols", cols);
       container.style.setProperty("--row-height", rowH + "px");
       container.style.setProperty("--gap", gap + "px");
@@ -2340,7 +2341,7 @@
         --bar-pos:#1e6b9f; --bar-neg:#ff5b5b; --row-bar-color:#1e6b9f; --stripe:rgba(255,255,255,.02);
       }
       html,body{background:var(--bg);color:var(--fg);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans";margin:0}
-      .board-grid{display:grid;grid-template-columns:repeat(var(--cols,12),1fr);grid-auto-rows:var(--row-height,110px);gap:var(--gap);padding:12px}
+      .board-grid{display:grid;grid-template-columns:repeat(var(--cols,12),1fr);grid-auto-rows:var(--row-height,110px);gap:var(--gap);padding:48px 12px}
       .board-card{display:flex;flex-direction:column;min-width:0;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
       .board-card__header{padding:10px 12px;font-weight:600;font-size:1.25rem;color:var(--fg);background:linear-gradient(180deg,var(--panel-2),transparent);border-bottom:1px solid var(--border-soft)}
       .board-card__body{min-height:0;overflow:auto;padding:10px 12px}
@@ -2379,6 +2380,42 @@
       /* keep totals/footer unchanged */
       .board-table tfoot .bar-wrap,
       .board-table .board-table__totals .bar-wrap{display:contents}
+      .export-header {
+        position: fixed;
+        top: 10px;
+        left: 10px;
+        z-index: 100;
+      }
+      .date-created {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 8px 16px;
+        font-size: 14px;
+        color: var(--fg);
+        font-weight: 500;
+        box-shadow: var(--shadow);
+        margin-bottom: 8px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .favicon-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: var(--fg-muted);
+        border: 1px solid var(--border);
+        flex-shrink: 0;
+      }
+      .favicon-icon {
+        width: 16px;
+        height: 16px;
+        display: block;
+      }
       .user-status {
         position: fixed;
         top: 10px;
@@ -2417,6 +2454,19 @@
       const faviconHref = (Trwth.core.renderFavicon && Trwth.core.renderFavicon()) || "";
 
       const title = document.title || "Trwth Dashboard";
+      // Generate elegant date created in US format
+      const now = new Date();
+      const dateOptions = { 
+        weekday: 'long', 
+        year: 'numeric', 
+        month: 'long', 
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZoneName: 'short'
+      };
+      const dateCreated = now.toLocaleDateString('en-US', dateOptions);
+
       const html = `<!DOCTYPE html>
     <html lang="en">
     <head>
@@ -2428,6 +2478,14 @@
     </head>
     <script src="engage.js" defer></script>
     <body>
+    <div class="export-header">
+      <div class="date-created">
+        <span class="favicon-badge">
+          <img src="${faviconHref}" alt="Trwth" class="favicon-icon">
+        </span>
+        Dashboard exported on ${dateCreated}
+      </div>
+    </div>
     <div class="user-status" aria-live="polite">
       <span class="online-indicator" id="onlineIndicator" title="Connectivity status"></span>
       <span id="userId">Checking user...</span>
