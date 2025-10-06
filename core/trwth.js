@@ -427,11 +427,22 @@
   U.keyOf = (row, id) => U.normalizeKey(row?.[id]);
   U.formatValue = (v, t) => {
     if (v == null || Number.isNaN(v)) return "";
+    const num = Number(v);
     switch (t) {
-      case "integer":  return String(Number(v)); //Number(v).toLocaleString();
-      case "currency": return Number(v).toLocaleString(undefined,{style:"currency",currency:"USD"});
-      case "percent":  return typeof v === "string" ? v : Math.round(Number(v) * 100) + "%";
-      default:         return String(v);
+      case "integer":  
+        return Math.abs(num) >= 1e6 ? num.toExponential(2) : String(num);
+      case "currency": 
+        return Math.abs(num) >= 1e9 ? `$${num.toExponential(2)}` : 
+               Number(v).toLocaleString(undefined,{style:"currency",currency:"USD"});
+      case "percent":  
+        return typeof v === "string" ? v : Math.round(Number(v) * 100) + "%";
+      case "variance":
+      case "float":
+      case "number":
+        return Math.abs(num) >= 1e6 || (Math.abs(num) < 1e-3 && num !== 0) ? 
+               num.toExponential(3) : String(num);
+      default:         
+        return String(v);
     }
   };
 
@@ -697,10 +708,11 @@
     return best;
   };
 
-  U.computeAggregateRow = (rows, columns, { skipIds = [], fnRegistry = {} } = {}) => {
+  U.computeAggregateRow = (rows, columns, { skipIds = [], fnRegistry = {}, sources = {}, filters = [] } = {}) => {
     // 1) Aggregate base (non-function) columns, excluding primary/secondary keys
     const skip = new Set(skipIds || []);
     const dataCols = (columns || []).filter(c => c.column_type !== "function" && !skip.has(c.id));
+    const formulaCols = (columns || []).filter(c => c.column_type === "formula" && !skip.has(c.id));
     const out = {};
 
     const today = Date.now();
@@ -749,7 +761,170 @@
       }
     }
 
-    // 2) Compute function columns using aggregated inputs
+    // 2) Handle formula columns - apply the same formula to the total
+    console.log(`[computeAggregateRow] processing ${formulaCols.length} formula columns:`, formulaCols.map(c => ({ id: c.id, formula: c.formula, target_id: c.target_id })));
+    for (const c of formulaCols) {
+      const fName = String(c.formula || "").toLowerCase().replace(/^distinct$/, "distinct_count");
+      console.log(`[computeAggregateRow] processing formula column ${c.id} with formula ${fName}`);
+      
+      if (!["count","average","sum","min","max","distinct_count","variance"].includes(fName)) {
+        console.warn(`[computeAggregateRow] unsupported formula '${c.formula}' on column '${c.id}'`);
+        out[c.id] = null;
+        continue;
+      }
+
+      switch (fName) {
+        case "count": {
+          // For count: sum per-row counts when present; else fallback to rows.length
+          const hasPerRow = rows.some(r => r && r[c.id] != null && r[c.id] !== "");
+          if (hasPerRow) {
+            let total = 0;
+            for (const r of rows) {
+              const v = r?.[c.id];
+              if (U._isNumLike(v)) total += U._toNum(v);
+              else if (v != null && v !== "") total += 1; // boolean-like presence
+            }
+            out[c.id] = total;
+          } else {
+            out[c.id] = rows.length;
+          }
+          break;
+        }
+        case "sum": {
+          // For sum: sum all values from the target column
+          const targetId = c.target_id || c.id;
+          const vals = rows.map(r => r?.[targetId]).filter(v => v != null && v !== "");
+          let sum = 0;
+          for (const v of vals) {
+            const n = U._toNum(v);
+            if (Number.isFinite(n)) sum += n;
+          }
+          out[c.id] = sum;
+          break;
+        }
+             case "average": {
+               // For average: calculate true average from all individual values in original data
+               const targetId = c.target_id || c.id;
+               const source = c.source;
+               
+               if (source && sources[source] && filters.length > 0) {
+                 // Calculate true average from original data with filters applied
+                 const originalRows = U.applyFilters ? U.applyFilters(sources[source], filters) : sources[source];
+                 const vals = originalRows.map(r => r?.[targetId]).filter(v => v != null && v !== "");
+                 console.log(`[computeAggregateRow] true average for ${c.id}:`, { source, targetId, originalRowsCount: originalRows.length, valsCount: vals.length });
+                 
+                 let sum = 0, count = 0;
+                 for (const v of vals) {
+                   const n = U._toNum(v);
+                   if (Number.isFinite(n)) { sum += n; count++; }
+                 }
+                 const result = count ? (sum / count) : null;
+                 console.log(`[computeAggregateRow] true average result:`, { sum, count, result });
+                 out[c.id] = result;
+               } else {
+                 // Fallback: use formula column values (average of averages)
+                 const vals = rows.map(r => r?.[c.id]).filter(v => v != null && v !== "");
+                 console.log(`[computeAggregateRow] fallback average for ${c.id}:`, { vals, rows: rows.length });
+                 let sum = 0, count = 0;
+                 for (const v of vals) {
+                   const n = U._toNum(v);
+                   if (Number.isFinite(n)) { sum += n; count++; }
+                 }
+                 const result = count ? (sum / count) : null;
+                 console.log(`[computeAggregateRow] fallback average result:`, { sum, count, result });
+                 out[c.id] = result;
+               }
+               break;
+             }
+        case "variance": {
+          // For variance: calculate true variance from all individual values in original data
+          const targetId = c.target_id || c.id;
+          const source = c.source;
+          
+          if (source && sources[source] && filters.length > 0) {
+            // Calculate true variance from original data with filters applied
+            const originalRows = U.applyFilters ? U.applyFilters(sources[source], filters) : sources[source];
+            const vals = originalRows.map(r => r?.[targetId]).filter(v => v != null && v !== "");
+            console.log(`[computeAggregateRow] true variance for ${c.id}:`, { source, targetId, originalRowsCount: originalRows.length, valsCount: vals.length });
+            
+            if (vals.length === 0) {
+              out[c.id] = null;
+              break;
+            }
+            
+            // Calculate mean first
+            let sum = 0, count = 0;
+            for (const v of vals) {
+              const n = U._toNum(v);
+              if (Number.isFinite(n)) { sum += n; count++; }
+            }
+            const mean = count ? (sum / count) : 0;
+            
+            // Calculate variance: sum of squared differences from mean
+            let varianceSum = 0;
+            for (const v of vals) {
+              const n = U._toNum(v);
+              if (Number.isFinite(n)) {
+                const diff = n - mean;
+                varianceSum += diff * diff;
+              }
+            }
+            const variance = count > 1 ? (varianceSum / (count - 1)) : 0; // Sample variance (n-1)
+            
+            console.log(`[computeAggregateRow] true variance result:`, { mean, varianceSum, count, variance });
+            out[c.id] = variance;
+          } else {
+            // Fallback: use formula column values (variance of variances - not meaningful)
+            const vals = rows.map(r => r?.[c.id]).filter(v => v != null && v !== "");
+            console.log(`[computeAggregateRow] fallback variance for ${c.id}:`, { vals, rows: rows.length });
+            // For fallback, just take the first variance value or null
+            out[c.id] = vals.length > 0 ? U._toNum(vals[0]) : null;
+          }
+          break;
+        }
+        case "min": {
+          // For min: minimum of all values from the target column
+          const targetId = c.target_id || c.id;
+          const vals = rows.map(r => r?.[targetId]).filter(v => v != null && v !== "");
+          let min = null;
+          for (const v of vals) {
+            const n = U._toNum(v);
+            if (Number.isFinite(n)) {
+              if (min === null || n < min) min = n;
+            }
+          }
+          out[c.id] = min;
+          break;
+        }
+        case "max": {
+          // For max: maximum of all values from the target column
+          const targetId = c.target_id || c.id;
+          const vals = rows.map(r => r?.[targetId]).filter(v => v != null && v !== "");
+          let max = null;
+          for (const v of vals) {
+            const n = U._toNum(v);
+            if (Number.isFinite(n)) {
+              if (max === null || n > max) max = n;
+            }
+          }
+          out[c.id] = max;
+          break;
+        }
+        case "distinct_count": {
+          // For distinct_count: count unique values from the target column
+          const targetId = c.target_id || c.id;
+          const vals = rows.map(r => r?.[targetId]).filter(v => v != null && v !== "");
+          const unique = new Set(vals.map(v => String(v)));
+          out[c.id] = unique.size;
+          break;
+        }
+        default: {
+          out[c.id] = null;
+        }
+      }
+    }
+
+    // 3) Compute function columns using aggregated inputs
     const fnCols = (columns || []).filter(c => c.column_type === "function");
     for (const c of fnCols) {
       const impl = fnRegistry?.[c.fn]?.implementation;
@@ -1204,7 +1379,7 @@
       (cfg?.columns || []).forEach(c => {
         const td = tr.insertCell();
         td.innerHTML = Trwth.utils.formatValue(r?.[c.id], c.data_type);
-        const numericTypes = ["integer","currency","percent","float","number","rate"];
+        const numericTypes = ["integer","currency","percent","float","number","rate","variance"];
         if (numericTypes.includes((c.data_type || "").toLowerCase())) {
           td.classList.add("num");
         }
@@ -1566,7 +1741,7 @@
               const agg = U.computeAggregateRow(
                 rows,
                 block.columns,
-                { skipIds, fnRegistry: (window.financial?.functions) || {} }
+                { skipIds, fnRegistry: (window.financial?.functions) || {}, sources, filters: block.filters || [] }
               );
 
               const tfoot = tbl.createTFoot();
@@ -1591,7 +1766,7 @@
                 const v = Object.prototype.hasOwnProperty.call(agg, c.id) ? agg[c.id] : null;
                 const type = String(c.data_type || "").toLowerCase();
                 td.innerHTML = U.formatValue(v, type);
-                if (["integer","currency","percent","float","number","rate"].includes(type)) {
+                if (["integer","currency","percent","float","number","rate","variance"].includes(type)) {
                   td.classList.add("num");
                   td.style.fontWeight = "600";
                 }
@@ -1625,7 +1800,44 @@
           // Base rows: primary source + only filters for that source
           const base = [...(sources[prim] || [])];
           const scoped = (block.filters || []).filter(f => (f.source || prim) === prim);
-          const filtered = Trwth.utils.applyFilters(base, scoped);
+          let filtered = Trwth.utils.applyFilters(base, scoped);
+          
+          // Apply unjoin filters to individual records (same logic as in buildRows)
+          const unjoinKeys = (block.filters || []).filter(f => f.unjoin_key);
+          if (unjoinKeys.length) {
+            for (const unjoinFilter of unjoinKeys) {
+              if (unjoinFilter.source === prim) continue; // Skip primary source
+              
+              const sourceRows = sources[unjoinFilter.source] || [];
+              const sourceKeys = new Set();
+              
+              // Apply the where condition to filter source rows
+              if (unjoinFilter.where) {
+                const filteredSourceRows = U.applyFilters ? U.applyFilters(sourceRows, [unjoinFilter]) : sourceRows;
+                filteredSourceRows.forEach(sr => {
+                  const k = U.keyOf(sr, unjoinFilter.unjoin_key);
+                  if (k) sourceKeys.add(k);
+                });
+              } else {
+                // If no where clause, exclude ALL matching keys (true unjoin)
+                sourceRows.forEach(sr => {
+                  const k = U.keyOf(sr, unjoinFilter.unjoin_key);
+                  if (k) sourceKeys.add(k);
+                });
+              }
+              
+              console.log(`[drill-unjoin] ${unjoinFilter.source} -> ${unjoinFilter.unjoin_key}: excluding ${sourceKeys.size} keys`);
+              console.log(`[drill-unjoin] before filtering: ${filtered.length} records`);
+              
+              // Filter out primary records that have matching keys in the source
+              filtered = filtered.filter(r => {
+                const key = U.keyOf(r, unjoinFilter.unjoin_key);
+                return !sourceKeys.has(key);
+              });
+              
+              console.log(`[drill-unjoin] after filtering: ${filtered.length} records`);
+            }
+          }
 
           // If group_by applies to this primary source, annotate rows with group label (so PK can render),
           // and remember the original field (from_id) to include in the drill columns.
@@ -1972,6 +2184,44 @@
       // Apply ONLY filters scoped to the primary source
       const primFilters = (tbl.filters || []).filter(f => (f.source || prim) === prim);
       let primFiltered = U.applyFilters(primRowsRaw, primFilters);
+      
+      // ── 1b) Apply unjoin filters to individual records before aggregation ──────
+      const unjoinKeys = (tbl.filters || []).filter(f => f.unjoin_key);
+      if (unjoinKeys.length) {
+        for (const unjoinFilter of unjoinKeys) {
+          if (unjoinFilter.source === prim) continue; // Skip primary source
+          
+          const sourceRows = sources[unjoinFilter.source] || [];
+          const sourceKeys = new Set();
+          
+          // Apply the where condition to filter source rows
+          if (unjoinFilter.where) {
+            const filteredSourceRows = U.applyFilters ? U.applyFilters(sourceRows, [unjoinFilter]) : sourceRows;
+            filteredSourceRows.forEach(sr => {
+              const k = U.keyOf(sr, unjoinFilter.unjoin_key);
+              if (k) sourceKeys.add(k);
+            });
+          } else {
+            // If no where clause, exclude ALL matching keys (true unjoin)
+            sourceRows.forEach(sr => {
+              const k = U.keyOf(sr, unjoinFilter.unjoin_key);
+              if (k) sourceKeys.add(k);
+            });
+          }
+          
+          console.log(`[unjoin] ${unjoinFilter.source} -> ${unjoinFilter.unjoin_key}: excluding ${sourceKeys.size} keys:`, [...sourceKeys]);
+          console.log(`[unjoin] before filtering: ${primFiltered.length} primary records`);
+          
+          // Filter out primary records that have matching keys in the source
+          primFiltered = primFiltered.filter(r => {
+            const key = U.keyOf(r, unjoinFilter.unjoin_key);
+            return !sourceKeys.has(key);
+          });
+          
+          console.log(`[unjoin] after filtering: ${primFiltered.length} primary records`);
+        }
+      }
+      
       log("primary:", prim, "filtered rows:", primFiltered.length);
 
       // ── 2) Optional: GROUP BY (derive a label field) ───────────────────────────
@@ -2047,7 +2297,8 @@
       log("aggregated rows:", aggregated.length);
 
       // ── 4) Merge in non-primary sources (simple key join) ──────────────────────
-      // (For special group-aware join_on, we’ll add an extra step below.)
+      // (For special group-aware join_on, we'll add an extra step below.)
+      
       let merged = U.mergeByKey
         ? U.mergeByKey(aggregated, sources, keyId, allCols, prim)
         : aggregated;
@@ -2143,7 +2394,7 @@
         for (const c of formulaCols) {
           const src = c.source || prim;
           const fName = normalizeFormula(c.formula);
-          if (!["count","average","sum","min","max","distinct_count"].includes(fName)) {
+          if (!["count","average","sum","min","max","distinct_count","variance"].includes(fName)) {
             console.warn(`[buildRows] unsupported formula '${c.formula}' on column '${c.id}'`);
             continue;
           }
@@ -2197,6 +2448,17 @@
                 perKey.set(pk, set);
                 break;
               }
+              case "variance": {
+                if (!c.target_id) break;
+                const n = toNum(r?.[c.target_id]);
+                if (!Number.isFinite(n)) break;
+                const agg = perKey.get(pk) || { sum: 0, sumSquares: 0, count: 0 };
+                agg.sum += n;
+                agg.sumSquares += n * n;
+                agg.count += 1;
+                perKey.set(pk, agg);
+                break;
+              }
             }
           }
 
@@ -2205,6 +2467,16 @@
             for (const [k, agg] of perKey) perKey.set(k, agg.count ? (agg.sum / agg.count) : 0);
           } else if (fName === "distinct_count") {
             for (const [k, set] of perKey) perKey.set(k, set.size);
+          } else if (fName === "variance") {
+            for (const [k, agg] of perKey) {
+              if (agg.count > 1) {
+                const mean = agg.sum / agg.count;
+                const variance = (agg.sumSquares / agg.count) - (mean * mean);
+                perKey.set(k, variance);
+              } else {
+                perKey.set(k, 0);
+              }
+            }
           }
 
           // write onto merged rows
@@ -2212,7 +2484,7 @@
             const pk = String(row?.[keyId] ?? "");
             row[c.id] = perKey.has(pk)
               ? perKey.get(pk)
-              : (fName === "count" || fName === "distinct_count" ? 0 : null);
+              : (fName === "count" || fName === "distinct_count" || fName === "variance" ? 0 : null);
           });
         }
       }
