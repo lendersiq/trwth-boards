@@ -50,36 +50,36 @@
           id: "commercialLoans",
           title: "Commercial Loans closed this year",
           type: "table",
-          primary_key: { id: "Owner_Code", source: "loan" },
+          primary_key: { id: "Owner_Code", source: "loans" },
           secondary_keys: ["Portfolio"],
           columns: [
-            { heading: "Officer", id: "Owner_Code", column_type: "data", data_type: "integer", source: "loan" },
-            { heading: "Principal", id: "Principal", column_type: "data", data_type: "currency", source: "loan" },
+            { heading: "Officer", id: "Owner_Code", column_type: "data", data_type: "integer", source: "loans" },
+            { heading: "Principal", id: "Principal", column_type: "data", data_type: "currency", source: "loans" },
             { heading: "Goal", id: "Goal", column_type: "data", data_type: "currency", source: "officer_data" },
             { heading: "YTD Performance", id: "YTD_Performance", column_type: "function", data_type: "percent",
               fn: "ytdPerformance", params: ["Principal", "Goal"] }
           ],
           filters: [
-            { id: "Owner_Code", source: "loan", where: "[92]" },
-            { id: "Date_Opened", source: "loan", where: "> 2024-01-01" },
-            { id: "Branch", source: "loan", where: "[14]" }
+            { id: "Owner_Code", source: "loans", where: "[92]" },
+            { id: "Date_Opened", source: "loans", where: "> 2024-01-01" },
+            { id: "Branch", source: "loans", where: "[14]" }
           ]
         },
         {
           id: "uniqueLoanTypes",
           title: "Unique loan type count",
           type: "table",
-          primary_key: { id: "Class_Code", source: "loan" },
+          primary_key: { id: "Class_Code", source: "loans" },
           secondary_keys: ["Portfolio"],
           columns: [
-            { heading: "Type", id: "Class_Code", column_type: "data", data_type: "integer", source: "loan" },
-            { heading: "Type Count", id: "type_count",  column_type: "formula", data_type: "number", formula: "count", source: "loan", target_id: "Class_Code" },
-            { heading: "Principal", id: "Principal", column_type: "data", data_type: "currency", source: "loan" }
+            { heading: "Type", id: "Class_Code", column_type: "data", data_type: "integer", source: "loans" },
+            { heading: "Type Count", id: "type_count",  column_type: "formula", data_type: "number", formula: "count", source: "loans", target_id: "Class_Code" },
+            { heading: "Principal", id: "Principal", column_type: "data", data_type: "currency", source: "loans" }
           ],
           filters: [
-            { id: "Owner_Code", source: "loan", where: "[92]" },
-            { id: "Date_Opened", source: "loan", where: "> 2024-01-01" },
-            { id: "Branch", source: "loan", where: "[14]" }
+            { id: "Owner_Code", source: "loans", where: "[92]" },
+            { id: "Date_Opened", source: "loans", where: "> 2024-01-01" },
+            { id: "Branch", source: "loans", where: "[14]" }
           ]
         },
       ]

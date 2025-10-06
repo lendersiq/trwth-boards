@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="../../styles/base.css">
+  <title>Statistics Demo</title>
+</head>
+<body>
+  <script>
+    window.boardConfig = {
+      board_layout: { cols: 12, row_height: 110, gap: 8, storage_key: "statistics-layout" },
+      board: [
+        {
+          id: "uniqueLoanTypes",
+          title: "Unique loan type count",
+          type: "table",
+          primary_key: { id: "Class_Code", source: "loans" },
+          secondary_keys: ["Portfolio"],
+          columns: [
+            { heading: "Type", id: "Class_Code", column_type: "data", data_type: "integer", source: "loans" },
+            { heading: "Average Principal", id: "averagePrincipal", column_type: "formula", data_type: "currency", formula: "average", source: "loans", target_id: "Principal" },
+            { heading: "Principal Variance", id: "principalVariance", column_type: "formula", data_type: "currency", formula: "variance", source: "loans", target_id: "Principal" }
+          ],
+          filters: [
+            { id: "Class_Code", source: "loans", where: "[10, 20]" },
+          ]
+        },
+      ]
+    };
+  </script>
+  <script src="../../core/trwth.js" defer></script>
+</body>
+</html>
