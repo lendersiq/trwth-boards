@@ -16,14 +16,15 @@
           title: "Unique loan type count",
           type: "table",
           primary_key: { id: "Class_Code", source: "loans" },
-          secondary_keys: ["Portfolio"],
+          secondary_keys: ["Principal"],
           columns: [
             { heading: "Type", id: "Class_Code", column_type: "data", data_type: "integer", source: "loans" },
             { heading: "Average Principal", id: "averagePrincipal", column_type: "formula", data_type: "currency", formula: "average", source: "loans", target_id: "Principal" },
             { heading: "Principal Variance", id: "principalVariance", column_type: "formula", data_type: "currency", formula: "variance", source: "loans", target_id: "Principal" }
           ],
           filters: [
-            { id: "Class_Code", source: "loans", where: "[10, 20]" },
+            { id: "Principal", source: "loans", where: "> 100000" },
+            { id: "Class_Code", source: "loans", where: "[10]" },
           ]
         },
       ]
