@@ -534,7 +534,7 @@
 
         return (r) => {
           const raw = r?.[id];
-          if (raw == null) return true; // missing field → no-op
+          if (raw == null) return false; // strict AND: missing field fails predicate
           if (dateDaySet.size) {
             const ms = parseDateLoose(raw);
             if (Number.isFinite(ms) && dateDaySet.has(dayKey(ms))) return true;
@@ -555,7 +555,7 @@
 
         return (r) => {
           const lvRaw = r?.[id];
-          if (lvRaw == null) return true; // missing field → no-op
+          if (lvRaw == null) return false; // strict AND: missing field fails predicate
 
           // Date compare (if RHS is a date)
           if (Number.isFinite(rhsDate)) {
@@ -639,7 +639,7 @@
         const dateSet = new Set(f.values.map(parseDateLoose).filter(Number.isFinite).map(dayKey));
         return (r) => {
           const raw = r?.[f.id];
-          if (raw == null) return true; // missing field → no-op
+          if (raw == null) return false; // strict AND: missing field fails predicate
           if (dateSet.size) {
             const ms = parseDateLoose(raw);
             if (Number.isFinite(ms) && dateSet.has(dayKey(ms))) return true;
