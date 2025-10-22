@@ -454,7 +454,11 @@
     const cleanNum = (x) => String(x).trim().replace(/[$,%\s,]/g, "");
     const isNumericLike = (x) =>
       typeof x === "number" ? Number.isFinite(x)
-      : typeof x === "string" ? (cleanNum(x) !== "" && !Number.isNaN(Number(cleanNum(x))))
+      : typeof x === "string" ? (() => {
+          const cleaned = cleanNum(x);
+          return (cleaned !== "" && !Number.isNaN(Number(cleaned))) || 
+                 (cleaned === "" && !Number.isNaN(Number(x.trim())));
+        })()
       : false;
     const toNum = (x) => Number(cleanNum(x));
 
@@ -471,6 +475,8 @@
         if (n >= 60 && n < 100000) return excelSerialToMs(n); // Excel serial
         if (n >= 1e10) return n;                               // epoch ms
         if (n >= 1e5 && n < 1e10) return n * 1000;             // epoch s → ms
+        // For small numbers like 0, 1, 2, etc., don't treat as dates
+        if (n < 60) return NaN;
       }
 
       const s = String(val).trim();
@@ -549,13 +555,19 @@
       if (m) {
         const op = m[1];
         const rhsRaw = m[2].replace(/^"(.*)"$|^'(.*)'$/, "$1$2");
+        
+        console.log(`[filter] parsing term: "${term}" -> op: "${op}", rhsRaw: "${rhsRaw}"`);
 
         const rhsDate = parseDateLoose(rhsRaw);
         const rhsNum  = isNumericLike(rhsRaw) ? toNum(rhsRaw) : NaN;
+        
+        console.log(`[filter] rhsDate: ${rhsDate}, rhsNum: ${rhsNum}, isNumericLike: ${isNumericLike(rhsRaw)}`);
 
         return (r) => {
           const lvRaw = r?.[id];
           if (lvRaw == null) return false; // strict AND: missing field fails predicate
+          
+          // console.log(`[filter] comparing ${lvRaw} ${op} ${rhsRaw} (${rhsNum})`);
 
           // Date compare (if RHS is a date)
           if (Number.isFinite(rhsDate)) {
@@ -632,6 +644,7 @@
     });
 
     const preds = usable.map(f => {
+      console.log(`[applyFilters] processing filter:`, f);
       // legacy: { op:"in", values:[...] }
       if (f.op === "in" && Array.isArray(f.values)) {
         const strSet = new Set(f.values.map(String));
@@ -2174,7 +2187,11 @@
       const cleanNum = (x) => String(x).trim().replace(/[$,%\s,]/g, "");
       const isNumericLike = (x) =>
         typeof x === "number" ? Number.isFinite(x)
-        : typeof x === "string" ? (cleanNum(x) !== "" && !Number.isNaN(Number(cleanNum(x))))
+        : typeof x === "string" ? (() => {
+            const cleaned = cleanNum(x);
+            return (cleaned !== "" && !Number.isNaN(Number(cleaned))) || 
+                   (cleaned === "" && !Number.isNaN(Number(x.trim())));
+          })()
         : false;
       const toNum = (v) => Number.isFinite(+v) ? +v : (isNumericLike(v) ? +cleanNum(v) : 0);
 
@@ -2183,7 +2200,10 @@
 
       // Apply ONLY filters scoped to the primary source
       const primFilters = (tbl.filters || []).filter(f => (f.source || prim) === prim);
+      console.log(`[buildRows] primary source: ${prim}, filters:`, primFilters);
+      console.log(`[buildRows] before filtering: ${primRowsRaw.length} rows`);
       let primFiltered = U.applyFilters(primRowsRaw, primFilters);
+      console.log(`[buildRows] after filtering: ${primFiltered.length} rows`);
       
       // ── 1b) Apply unjoin filters to individual records before aggregation ──────
       const unjoinKeys = (tbl.filters || []).filter(f => f.unjoin_key);
